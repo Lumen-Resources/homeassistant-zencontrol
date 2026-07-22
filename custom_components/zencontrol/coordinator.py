@@ -168,12 +168,13 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             except OSError as exc:
                 raise UpdateFailed(f"Cannot connect to {self._host}: {exc}") from exc
 
-        # Health check — re-assert event configuration if controller rebooted
-        await self._check_and_assert_events()
+        is_first_run = not self.data.label or self.data.label == "zencontrol"
 
-        # Full discovery only on the very first update
-        if not self.data.label or self.data.label == "zencontrol":
+        if is_first_run:
             await self._discover()
+        else:
+            # Health check — re-assert event configuration if controller rebooted
+            await self._check_and_assert_events()
 
         return self.data
 
@@ -185,16 +186,12 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         """Query controller metadata and auto-discover groups/scenes/profiles."""
         _LOGGER.debug("Starting discovery for %s", self._host)
 
-        # Wait for controller startup — up to 60 s in 5 s increments
-        for attempt in range(12):
-            if await self.commands.query_startup_complete():
-                break
-            _LOGGER.debug("Controller %s not ready yet (attempt %d/12)", self._host, attempt + 1)
-            await asyncio.sleep(5)
-        else:
-            _LOGGER.warning(
-                "Controller %s startup did not complete after 60 s — continuing anyway",
-                self._host,
+        # Single non-blocking readiness check. If the controller hasn't finished
+        # booting yet, raise UpdateFailed so HA retries via ConfigEntryNotReady
+        # with exponential backoff — no sleeping on the event loop.
+        if not await self.commands.query_startup_complete():
+            raise UpdateFailed(
+                f"Controller {self._host} is not ready yet — will retry"
             )
 
         # Basic controller info
