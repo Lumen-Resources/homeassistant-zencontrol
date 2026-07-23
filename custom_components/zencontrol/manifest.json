@@ -1,13 +1,13 @@
 {
   "domain": "zencontrol",
   "name": "zencontrol",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "config_flow": true,
-  "documentation": "https://github.com/ribenajuice/homeassistant-zencontrol",
-  "issue_tracker": "https://github.com/ribenajuice/homeassistant-zencontrol/issues",
+  "documentation": "https://github.com/Lumen-Resources/homeassistant-zencontrol",
+  "issue_tracker": "https://github.com/Lumen-Resources/homeassistant-zencontrol/issues",
   "requirements": [],
   "dependencies": ["network"],
-  "codeowners": ["@ribenajuice"],
+  "codeowners": ["@Darren-LR"],
   "iot_class": "local_push",
   "loggers": ["custom_components.zencontrol"]
 }
