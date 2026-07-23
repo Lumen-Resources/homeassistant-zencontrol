@@ -327,6 +327,34 @@ class ZenCommands:
         return None
 
     # ------------------------------------------------------------------
+    # System variables
+    # ------------------------------------------------------------------
+
+    async def query_system_variable_name(self, number: int) -> str | None:
+        """Return the label for a system variable, or None if unnamed/unavailable.
+
+        Pro controllers only — non-Pro controllers do not answer this command,
+        which returns None (and is how we detect there are no named variables).
+        """
+        resp = await self._send(Command.QUERY_SYSTEM_VARIABLE_NAME, address=number)
+        if resp and resp.has_data:
+            name = resp.data.decode("utf-8", errors="replace").strip()
+            return name or None
+        return None
+
+    async def query_system_variable(self, number: int) -> int | None:
+        """Return a system variable's 16-bit value (signed), or None.
+
+        Note: this legacy query returns only 16 bits with zero magnitude. Full
+        precision (signed 32-bit + magnitude) arrives via SYSTEM_VARIABLE_CHANGED
+        events, which are the authoritative source for sensor state.
+        """
+        resp = await self._send(Command.QUERY_SYSTEM_VARIABLE, address=number)
+        if resp and resp.has_data and len(resp.data) >= 2:
+            return int.from_bytes(resp.data[0:2], "big", signed=True)
+        return None
+
+    # ------------------------------------------------------------------
     # DALI device info
     # ------------------------------------------------------------------
 

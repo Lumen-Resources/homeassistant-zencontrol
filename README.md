@@ -66,6 +66,7 @@ After setup, the integration creates the following entities for each controller:
 | **Binary sensor** (occupancy) | An occupancy / motion sensor | Auto-discovered; see below |
 | **Binary sensor** (absolute input) | A DALI absolute input, as on/off | Auto-discovered; see below |
 | **Event** | A keypad push button | Auto-discovered; fires `press` / `hold`; see below |
+| **Sensor** | A controller system variable | Auto-discovered (named) + manual; see below |
 | **Select** | Active controller profile | Shows and controls the current profile |
 
 ### Colour control
@@ -106,6 +107,15 @@ Keypads with controller-managed indicator LEDs expose a **switch** per button to
 ### Absolute inputs
 
 DALI absolute inputs are discovered as **binary sensor** entities, treated as an on/off input — `on` when the controller reports a non-zero value, `off` when it reports zero. These are read-only inputs: Home Assistant reflects their state but cannot drive them. The last raw 16-bit value is exposed as the `raw_value` attribute for diagnostics. The sensor has no state until the input first reports.
+
+### System variables
+
+Controller system variables are exposed as read-only **sensor** entities. This is typically where multisensor readings (CO₂, VOC, temperature, humidity, etc.) surface, as the controller maps those quantities to system variables.
+
+- On **Pro controllers**, variables that have a **name** are discovered automatically and use that name as the entity name.
+- You can also **manually add** a system variable by number via the integration options (Settings → Devices & Services → zencontrol → Configure → *Add a system variable*). This works on non-Pro controllers and for unnamed variables.
+- Values arrive via `SYSTEM_VARIABLE_CHANGED` events and carry full precision (signed value × 10^magnitude). The value is **unitless** — assign a unit or device class per entity in Home Assistant if you wish.
+- A sensor reads `unknown` until its variable next changes (events are the only full-precision source), and — like all TPI events — a variable only emits if it is active in the controller's **running profile**.
 
 ---
 

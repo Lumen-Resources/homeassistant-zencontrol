@@ -33,6 +33,8 @@
         "menu_options": {
           "add_scene": "Add a scene",
           "remove_scene": "Remove a scene",
+          "add_system_variable": "Add a system variable",
+          "remove_system_variable": "Remove a system variable",
           "done": "Save and finish"
         }
       },
@@ -52,15 +54,32 @@
         "data": {
           "scene_index": "Scene"
         }
+      },
+      "add_system_variable": {
+        "title": "Add System Variable",
+        "description": "Expose a controller system variable as a sensor. Named variables on Pro controllers are discovered automatically; use this to add unnamed variables or variables on non-Pro controllers.",
+        "data": {
+          "sysvar_number": "Variable number (0–147)",
+          "sysvar_name": "Display name (optional)"
+        }
+      },
+      "remove_system_variable": {
+        "title": "Remove System Variable",
+        "description": "Select the system variable to remove.",
+        "data": {
+          "sysvar_index": "System variable"
+        }
       }
     },
     "error": {
       "invalid_group": "Group number must be between 0 and 15.",
       "invalid_address": "Address must be between 0 and 63.",
-      "scene_exists": "A scene with this target and scene number is already configured."
+      "scene_exists": "A scene with this target and scene number is already configured.",
+      "sysvar_exists": "That system variable number is already configured."
     },
     "abort": {
-      "no_scenes": "No scenes are currently configured."
+      "no_scenes": "No scenes are currently configured.",
+      "no_sysvars": "No system variables are currently configured."
     }
   },
   "device_automation": {

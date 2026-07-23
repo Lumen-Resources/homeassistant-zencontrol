@@ -36,7 +36,7 @@ custom_components/zencontrol/
 ├── config_flow.py        ← ConfigFlow + OptionsFlow
 ├── __init__.py           ← async_setup_entry / async_unload_entry
 ├── device_trigger.py     ← Device triggers for push buttons (press/hold)
-└── light/scene/select/switch/binary_sensor/event.py  ← HA entity platforms
+└── light/scene/select/switch/binary_sensor/event/sensor.py  ← HA entity platforms
 ```
 
 ### TPI protocol key facts
@@ -87,6 +87,12 @@ One `EventListener` UDP socket is shared across all config entries (controllers)
 - **Button LEDs** (`OVERRIDE_DALI_BUTTON_LED_STATE` / `QUERY_LAST_KNOWN_DALI_BUTTON_LED_STATE`): no "has LED" query exists, so LED switches are created for every button but `entity_registry_enabled_default` is set to whether a definite state was read at discovery. State is optimistic.
 - **Absolute inputs** are stateful, read-only on/off: `_handle_absolute_input` stores the raw 16-bit value and calls `async_set_updated_data`; the `binary_sensor` is `on` when the value is non-zero. They emit only on a value *change* (turning a dial), not on a press.
 - **Gotcha — events require an active profile:** the controller only forwards an instance's TPI events when that instance is active in the *running profile*. An inactive instance stays silent on the TPI feed even though it appears in discovery and in the controller's own event log. If an entity never updates but no TPI event arrives, check the controller profile before suspecting this code.
+
+### System variables (sensors)
+
+- `_discover_system_variables()` gathers `QUERY_SYSTEM_VARIABLE_NAME` (0x42) for all 148 slots concurrently; named ones are exposed (Pro-only — non-Pro returns nothing). Manually configured variables (`CONF_SYSTEM_VARIABLES`, via the options flow) are merged in and work on any controller.
+- Live values come from `SYSTEM_VARIABLE_CHANGED_EVENT` (0x07): `target` = variable index, data = signed int32 (big-endian) + int8 magnitude; value = `raw * 10**magnitude`. `sensor.py` exposes these as unitless read-only sensors.
+- There is no full-precision query (the 16-bit `QUERY_SYSTEM_VARIABLE` lacks magnitude), so sensors read `unknown` until the first event. Same active-profile caveat applies.
 
 ### Colour handling
 

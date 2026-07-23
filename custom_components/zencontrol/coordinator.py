@@ -19,6 +19,9 @@ from .const import (
     CONF_EVENT_PORT,
     CONF_HOST,
     CONF_PORT,
+    CONF_SYSTEM_VARIABLES,
+    CONF_SYSVAR_NAME,
+    CONF_SYSVAR_NUMBER,
     CONF_USE_MULTICAST,
     DEFAULT_EVENT_PORT,
     DEFAULT_PORT,
@@ -94,6 +97,13 @@ class AbsoluteInputInfo:
 
 
 @dataclass
+class SystemVariableInfo:
+    """Metadata for one controller system variable exposed as a sensor."""
+    number: int              # System variable index (0-147)
+    name: str = ""
+
+
+@dataclass
 class DeviceState:
     """Cached state for a single DALI address (group or short address)."""
     arc_level: int = ARC_LEVEL_OFF
@@ -153,6 +163,11 @@ class ControllerState:
     # Live absolute input value keyed by (cd_address, instance_number)
     absolute_values: dict[tuple[int, int], int] = field(default_factory=dict)
 
+    # System variables (auto-discovered by name + manually configured)
+    system_variables: list[SystemVariableInfo] = field(default_factory=list)
+    # Live value keyed by variable number (float = raw int32 * 10**magnitude)
+    system_variable_values: dict[int, float] = field(default_factory=dict)
+
 
 # ---------------------------------------------------------------------------
 # Coordinator
@@ -176,6 +191,8 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         self._port: int = entry_data.get(CONF_PORT, DEFAULT_PORT)
         self._event_port: int = entry_data.get(CONF_EVENT_PORT, DEFAULT_EVENT_PORT)
         self._use_multicast: bool = entry_data.get(CONF_USE_MULTICAST, False)
+        # Manually configured system variables: list of {number, name}
+        self._manual_sysvars: list[dict] = entry_data.get(CONF_SYSTEM_VARIABLES, [])
 
         self._client = TpiClient(host=self._host, port=self._port)
         self.commands = ZenCommands(self._client)
@@ -276,12 +293,15 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         # Control-device instances: occupancy sensors, push buttons, absolute inputs
         await self._discover_instances()
 
+        # System variables (auto-discovered by name + manually configured)
+        await self._discover_system_variables()
+
         # Initial state poll for all known addresses
         await self._poll_all_states()
 
         _LOGGER.debug(
             "Discovery complete for %s: %d groups, %d short addresses, %d profiles, "
-            "%d occupancy sensors, %d buttons, %d absolute inputs",
+            "%d occupancy sensors, %d buttons, %d absolute inputs, %d system variables",
             self._host,
             len(self.data.groups),
             len(self.data.short_addresses),
@@ -289,6 +309,7 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             len(self.data.occupancy_sensors),
             len(self.data.buttons),
             len(self.data.absolute_inputs),
+            len(self.data.system_variables),
         )
 
     async def _discover_short_addresses(self) -> None:
@@ -394,6 +415,45 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             "Group capabilities on %s: members=%s features=%s",
             self._host, group_members,
             {g: vars(f) for g, f in group_features.items()},
+        )
+
+    async def _discover_system_variables(self) -> None:
+        """Discover system variables to expose as sensors.
+
+        Auto-discovers variables that have a name (Pro controllers answer
+        QUERY_SYSTEM_VARIABLE_NAME; non-Pro controllers do not, yielding none),
+        then merges any manually configured variables from the options flow.
+        Values are populated from SYSTEM_VARIABLE_CHANGED events, so entities
+        read "unknown" until each variable next changes.
+        """
+        max_sysvars = 148  # V2.1 Pro count; non-Pro simply returns None beyond 48
+        by_number: dict[int, SystemVariableInfo] = {}
+
+        # Auto: query all names concurrently; keep the ones that are named.
+        names = await asyncio.gather(
+            *[self.commands.query_system_variable_name(n) for n in range(max_sysvars)]
+        )
+        for number, name in enumerate(names):
+            if name:
+                by_number[number] = SystemVariableInfo(number=number, name=name)
+
+        # Manual: merge configured variables (override/extend the auto entries).
+        for cfg in self._manual_sysvars:
+            try:
+                number = int(cfg[CONF_SYSVAR_NUMBER])
+            except (KeyError, ValueError, TypeError):
+                continue
+            name = str(cfg.get(CONF_SYSVAR_NAME) or "").strip()
+            if not name:
+                auto = by_number.get(number)
+                name = auto.name if auto else f"System Variable {number}"
+            by_number[number] = SystemVariableInfo(number=number, name=name)
+
+        self.data.system_variables = [by_number[n] for n in sorted(by_number)]
+        _LOGGER.debug(
+            "Discovered %d system variables on %s: %s",
+            len(self.data.system_variables), self._host,
+            {sv.number: sv.name for sv in self.data.system_variables},
         )
 
     async def _discover_instances(self) -> None:
@@ -656,6 +716,8 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
                 self._handle_button(event, BUTTON_EVENT_HOLD)
             elif event.event_type == EventType.ABSOLUTE_INPUT:
                 self._handle_absolute_input(event)
+            elif event.event_type == EventType.SYSTEM_VARIABLE_CHANGED:
+                self._handle_system_variable_changed(event)
         except Exception:
             _LOGGER.exception("Error handling TPI event type 0x%02X", event.event_type)
 
@@ -774,6 +836,23 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             "Absolute input: addr=%d inst=%d value=%d", cd_address, instance_number, value
         )
         self.data.absolute_values[(cd_address, instance_number)] = value
+        self.async_set_updated_data(self.data)
+
+    def _handle_system_variable_changed(self, event: TpiEvent) -> None:
+        """SYSTEM_VARIABLE_CHANGED_EVENT: target = variable index,
+        data = [int32 value (big-endian), int8 magnitude]. value = raw * 10**magnitude.
+        """
+        if len(event.data) < 5:
+            return
+        number = event.target
+        raw = int.from_bytes(event.data[0:4], "big", signed=True)
+        magnitude = int.from_bytes(event.data[4:5], "big", signed=True)
+        value = raw * (10 ** magnitude)
+        _LOGGER.debug(
+            "System variable %d changed: raw=%d magnitude=%d value=%s",
+            number, raw, magnitude, value,
+        )
+        self.data.system_variable_values[number] = value
         self.async_set_updated_data(self.data)
 
     def _start_occupancy_timer(self, key: tuple[int, int], delay_s: int) -> None:
