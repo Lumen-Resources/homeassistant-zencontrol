@@ -10,6 +10,7 @@ dist/
 build/
 *.egg-info/
 *.egg
+custom_components/zencontrol.zip
 
 # Virtual environments
 .venv/
