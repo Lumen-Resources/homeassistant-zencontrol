@@ -323,32 +323,101 @@ class ZenGroupLight(_ZenLightBase):
         self._attr_extra_state_attributes = {"group_number": group_number}
 
     @property
+    def _features(self) -> DeviceColourFeatures:
+        """Colour features inferred for this group from its members at discovery."""
+        return self.coordinator.data.group_colour_features.get(
+            self._group_number, DeviceColourFeatures()
+        )
+
+    @property
+    def _any_dimmable(self) -> bool:
+        """True if any member of this group is dimmable (i.e. not relay-only)."""
+        members = self.coordinator.data.group_members.get(self._group_number, [])
+        types = self.coordinator.data.short_address_types
+        return any(
+            DaliCgTypeMask.RELAY not in types.get(addr, DaliCgTypeMask(0))
+            for addr in members
+        )
+
+    @property
+    def min_color_temp_kelvin(self) -> int | None:
+        limits = self.coordinator.data.group_ct_limits.get(self._group_number)
+        return limits.soft_warmest_k if limits else None
+
+    @property
+    def max_color_temp_kelvin(self) -> int | None:
+        limits = self.coordinator.data.group_ct_limits.get(self._group_number)
+        return limits.soft_coolest_k if limits else None
+
+    @property
+    def brightness(self) -> int | None:
+        # Relay-only groups are ONOFF and must not report a brightness value.
+        return None if not self._any_dimmable else super().brightness
+
+    @property
     def color_mode(self) -> ColorMode:
+        if not self._any_dimmable:
+            return ColorMode.ONOFF
+        f = self._features
         cs = self._get_colour_state()
-        if cs:
+        if cs and cs.colour_type:
             if cs.colour_type == ColourType.TC:
                 return ColorMode.COLOR_TEMP
             if cs.colour_type == ColourType.RGBWAF:
-                return ColorMode.RGBW if cs.w is not None else ColorMode.RGB
+                return ColorMode.RGBW if f.rgbwaf_channels >= 4 else ColorMode.RGB
             if cs.colour_type == ColourType.XY:
                 return ColorMode.XY
+        # Fall back to feature-based detection when no live colour state is present
+        if f.tc and not f.xy and not f.rgbwaf_channels:
+            return ColorMode.COLOR_TEMP
+        if f.rgbwaf_channels >= 4:
+            return ColorMode.RGBW
+        if f.rgbwaf_channels >= 3:
+            return ColorMode.RGB
+        if f.xy:
+            return ColorMode.XY
         return ColorMode.BRIGHTNESS
 
     @property
     def supported_color_modes(self) -> set[ColorMode]:
+        if not self._any_dimmable:
+            return {ColorMode.ONOFF}
+
+        modes: set[ColorMode] = set()
+        f = self._features
+        if f.tc:
+            modes.add(ColorMode.COLOR_TEMP)
+        if f.rgbwaf_channels >= 4:
+            modes.add(ColorMode.RGBW)
+        elif f.rgbwaf_channels >= 3:
+            modes.add(ColorMode.RGB)
+        if f.xy:
+            modes.add(ColorMode.XY)
+
+        # Also include any mode implied by the current colour state, so the set is
+        # never narrower than color_mode even if feature discovery came back empty.
         cs = self._get_colour_state()
-        if cs:
+        if cs and cs.colour_type:
             if cs.colour_type == ColourType.TC:
-                return {ColorMode.COLOR_TEMP}
-            if cs.colour_type == ColourType.RGBWAF:
-                return {ColorMode.RGBW if cs.w is not None else ColorMode.RGB}
-            if cs.colour_type == ColourType.XY:
-                return {ColorMode.XY}
-        return {ColorMode.BRIGHTNESS}
+                modes.add(ColorMode.COLOR_TEMP)
+            elif cs.colour_type == ColourType.RGBWAF:
+                modes.add(ColorMode.RGBW if cs.w is not None else ColorMode.RGB)
+            elif cs.colour_type == ColourType.XY:
+                modes.add(ColorMode.XY)
+
+        return modes or {ColorMode.BRIGHTNESS}
 
     @property
     def supported_features(self) -> LightEntityFeature:
-        return LightEntityFeature.TRANSITION
+        return LightEntityFeature(0) if not self._any_dimmable else LightEntityFeature.TRANSITION
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        # Relay-only groups support only on/off — ignore brightness/colour kwargs.
+        if not self._any_dimmable:
+            await self.coordinator.commands.recall_max(self._dali_address)
+            self._optimistic_update(new_arc=ARC_LEVEL_MAX)
+            return
+        await super().async_turn_on(**kwargs)
 
 
 # ---------------------------------------------------------------------------

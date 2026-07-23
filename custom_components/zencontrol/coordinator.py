@@ -110,6 +110,14 @@ class ControllerState:
     # Groups  {group_number: GroupInfo}
     groups: dict[int, GroupInfo] = field(default_factory=dict)
 
+    # Group capability data (auto-discovered from member short addresses)
+    # {group_number: [short_address, ...]} — all members found in the TPI database
+    group_members: dict[int, list[int]] = field(default_factory=dict)
+    # {group_number: DeviceColourFeatures} — union of member colour features
+    group_colour_features: dict[int, DeviceColourFeatures] = field(default_factory=dict)
+    # {group_number: ColourTempLimits} — only populated when a tc member was found
+    group_ct_limits: dict[int, ColourTempLimits] = field(default_factory=dict)
+
     # Profiles
     profile_info: ProfileInformation = field(default_factory=ProfileInformation)
     current_profile: int = 0
@@ -259,6 +267,12 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         # Short addresses (auto-discovered)
         await self._discover_short_addresses()
 
+        # Derive group colour capabilities from member short-address features.
+        # QUERY_DALI_COLOUR_FEATURES is a per-device command that does not work on
+        # group addresses, so we infer group capabilities by querying the group
+        # membership of each short address and unioning their features.
+        await self._discover_group_colour_features()
+
         # Control-device instances: occupancy sensors, push buttons, absolute inputs
         await self._discover_instances()
 
@@ -300,6 +314,87 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
 
             if addr not in self.data.device_states:
                 self.data.device_states[addr] = DeviceState()
+
+    async def _discover_group_colour_features(self) -> None:
+        """Derive colour capabilities for each group from its member short addresses.
+
+        QUERY_DALI_COLOUR_FEATURES only works on short addresses (0-63). We infer
+        group capabilities by querying each short address for its group memberships,
+        building a reverse map (group → members), then unioning the per-member
+        DeviceColourFeatures and intersecting the CT limits of TC-capable members.
+        """
+        if not self.data.groups:
+            return
+
+        # Query every known short address for group membership → full reverse map.
+        # Needed for both colour-feature derivation and relay-only detection.
+        all_memberships: dict[int, frozenset[int]] = {}
+        for addr in self.data.short_addresses:
+            all_memberships[addr] = frozenset(
+                await self.commands.query_group_membership(addr)
+            )
+
+        # group_number → member short addresses
+        group_members: dict[int, list[int]] = {}
+        for addr, addr_groups in all_memberships.items():
+            for gnum in addr_groups:
+                if gnum in self.data.groups:
+                    group_members.setdefault(gnum, []).append(addr)
+        self.data.group_members = group_members
+
+        # group_number → union of member colour features (colour-capable members only)
+        group_features: dict[int, DeviceColourFeatures] = {}
+        for addr, addr_groups in all_memberships.items():
+            features = self.data.short_address_colour_features.get(addr)
+            if not (features and features.supports_colour):
+                continue
+            for gnum in addr_groups:
+                if gnum not in self.data.groups:
+                    continue
+                existing = group_features.get(gnum)
+                if existing is None:
+                    group_features[gnum] = DeviceColourFeatures(
+                        xy=features.xy,
+                        tc=features.tc,
+                        primaries=features.primaries,
+                        rgbwaf_channels=features.rgbwaf_channels,
+                    )
+                else:
+                    group_features[gnum] = DeviceColourFeatures(
+                        xy=existing.xy or features.xy,
+                        tc=existing.tc or features.tc,
+                        primaries=max(existing.primaries, features.primaries),
+                        rgbwaf_channels=max(existing.rgbwaf_channels, features.rgbwaf_channels),
+                    )
+        self.data.group_colour_features = group_features
+
+        # For TC-capable groups, CT limits = intersection (common range) across
+        # TC-capable members so no fixture receives an out-of-range value.
+        for gnum, features in group_features.items():
+            if not features.tc:
+                continue
+            member_limits = [
+                self.data.short_address_ct_limits[addr]
+                for addr in group_members.get(gnum, [])
+                if self.data.short_address_colour_features.get(
+                    addr, DeviceColourFeatures()
+                ).tc
+                and addr in self.data.short_address_ct_limits
+            ]
+            if member_limits:
+                self.data.group_ct_limits[gnum] = ColourTempLimits(
+                    physical_warmest_k=max(l.physical_warmest_k for l in member_limits),
+                    physical_coolest_k=min(l.physical_coolest_k for l in member_limits),
+                    soft_warmest_k=max(l.soft_warmest_k for l in member_limits),
+                    soft_coolest_k=min(l.soft_coolest_k for l in member_limits),
+                    step_k=max(l.step_k for l in member_limits),
+                )
+
+        _LOGGER.debug(
+            "Group capabilities on %s: members=%s features=%s",
+            self._host, group_members,
+            {g: vars(f) for g, f in group_features.items()},
+        )
 
     async def _discover_instances(self) -> None:
         """Auto-discover all DALI control-device instances in a single pass.

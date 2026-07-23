@@ -342,6 +342,23 @@ class ZenCommands:
                     addresses.append(byte_idx * 8 + bit)
         return addresses
 
+    async def query_group_membership(self, address: int) -> set[int]:
+        """Return the set of group numbers (0-15) a short address belongs to.
+
+        Response is two bitwise bytes: data[0] = groups 8-15, data[1] = groups 0-7.
+        """
+        resp = await self._send(Command.QUERY_GROUP_MEMBERSHIP_BY_ADDRESS, address=address)
+        if not (resp and resp.has_data and len(resp.data) >= 2):
+            return set()
+        groups: set[int] = set()
+        hi, lo = resp.data[0], resp.data[1]
+        for bit in range(8):
+            if hi & (1 << bit):
+                groups.add(8 + bit)
+            if lo & (1 << bit):
+                groups.add(bit)
+        return groups
+
     async def query_device_label(self, address: int) -> str | None:
         """address: 0-63 for CG, 64-127 for CD"""
         resp = await self._send(Command.QUERY_DALI_DEVICE_LABEL, address=address)
