@@ -205,10 +205,19 @@ class ZenCommands:
         return None
 
     async def query_startup_complete(self) -> bool:
+        """Return True once the controller has finished its startup sequence.
+
+        Per the TPI spec the controller replies REPLY_OK (0xA0, no data) when
+        ready and REPLY_NO_ANSWER (0xA2) otherwise — it does NOT send an ANSWER
+        frame with a data byte. Some firmware may include a data byte; treat a
+        truthy data byte as ready too, for robustness.
+        """
         resp = await self._send(Command.QUERY_CONTROLLER_STARTUP_COMPLETE)
-        if resp and resp.has_data:
+        if resp is None or resp.no_answer:
+            return False
+        if resp.has_data:
             return bool(resp.data[0])
-        return False
+        return resp.ok
 
     async def query_dali_ready(self) -> bool:
         resp = await self._send(Command.QUERY_IS_DALI_READY)
