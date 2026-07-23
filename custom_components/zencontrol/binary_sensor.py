@@ -99,6 +99,7 @@ class ZenAbsoluteInputBinarySensor(
     """
 
     _attr_should_poll = False
+    _attr_icon = "mdi:light-switch"
 
     def __init__(
         self,

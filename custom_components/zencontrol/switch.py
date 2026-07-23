@@ -102,6 +102,7 @@ class ZenButtonLedSwitch(CoordinatorEntity[ZenControlCoordinator], SwitchEntity)
     """
 
     _attr_should_poll = False
+    _attr_icon = "mdi:led-on"
 
     def __init__(
         self,

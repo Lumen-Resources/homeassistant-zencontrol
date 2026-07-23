@@ -35,6 +35,7 @@ class ZenProfileSelect(CoordinatorEntity[ZenControlCoordinator], SelectEntity):
     """Allows the user to select the active controller profile."""
 
     _attr_should_poll = False
+    _attr_icon = "mdi:tune"
 
     def __init__(self, coordinator: ZenControlCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
