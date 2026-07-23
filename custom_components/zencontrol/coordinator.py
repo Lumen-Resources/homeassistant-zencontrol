@@ -198,6 +198,10 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         self.commands = ZenCommands(self._client)
         # Occupancy hold timers: (cd_address, instance_number) → cancel_callback
         self._occupancy_timers: dict[tuple[int, int], Any] = {}
+        # Shared event listener we registered with (set in setup_events)
+        self._listener: EventListener | None = None
+        # True once initial discovery has completed successfully
+        self._discovered = False
 
         super().__init__(
             hass,
@@ -224,9 +228,7 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             except OSError as exc:
                 raise UpdateFailed(f"Cannot connect to {self._host}: {exc}") from exc
 
-        is_first_run = not self.data.label or self.data.label == "zencontrol"
-
-        if is_first_run:
+        if not self._discovered:
             await self._discover()
         else:
             # Health check — re-assert event configuration if controller rebooted
@@ -299,6 +301,7 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         # Initial state poll for all known addresses
         await self._poll_all_states()
 
+        self._discovered = True
         _LOGGER.debug(
             "Discovery complete for %s: %d groups, %d short addresses, %d profiles, "
             "%d occupancy sensors, %d buttons, %d absolute inputs, %d system variables",
@@ -893,7 +896,12 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         )
 
     async def async_disconnect(self) -> None:
-        """Disconnect from the controller and cancel any pending hold timers."""
+        """Disconnect from the controller and release event/timer resources."""
+        # Stop receiving events for this controller — otherwise the shared
+        # listener keeps dispatching into a dead coordinator after removal.
+        if self._listener is not None:
+            self._listener.unregister(self._host)
+            self._listener = None
         for cancel in self._occupancy_timers.values():
             cancel()
         self._occupancy_timers.clear()
