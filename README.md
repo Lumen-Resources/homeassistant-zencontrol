@@ -61,8 +61,11 @@ After setup, the integration creates the following entities for each controller:
 |---|---|---|
 | **Light** (group) | A DALI lighting group | Auto-discovered from the controller |
 | **Light** (short address) | An individual DALI fixture | Auto-discovered |
-| **Switch** | A DALI relay output | Auto-discovered; detected by device type |
-| **Binary sensor** | An occupancy / motion sensor | Auto-discovered; see below |
+| **Switch** (relay) | A DALI relay output | Auto-discovered; detected by device type |
+| **Switch** (button LED) | A keypad push-button indicator LED | Auto-discovered; disabled by default — see below |
+| **Binary sensor** (occupancy) | An occupancy / motion sensor | Auto-discovered; see below |
+| **Binary sensor** (absolute input) | A DALI absolute input, as on/off | Auto-discovered; see below |
+| **Event** | A keypad push button | Auto-discovered; fires `press` / `hold`; see below |
 | **Select** | Active controller profile | Shows and controls the current profile |
 
 ### Colour control
@@ -88,6 +91,21 @@ DALI occupancy sensors (motion detectors) are automatically discovered and appea
 - The hold time is read directly from the controller at startup, so no manual configuration is required.
 - Initial state is recovered on startup: if the controller reports that motion was detected more recently than the hold time, the sensor will start in the `on` state.
 - Each sensor entity exposes three diagnostic attributes: `dali_cd_address` (the raw TPI address, 64–127), `cd_index` (the control device index, 0–63), and `hold_time_s` (the hold time in seconds).
+
+### Push buttons (keypads)
+
+DALI push buttons are automatically discovered and appear as **event** entities. Each physical button becomes one event entity whose state is the timestamp of its most recent event, with an `event_type` attribute of either `press` or `hold`.
+
+- Each button also appears as a **device trigger** in the automation UI (e.g. *"Kitchen Button 1" pressed / held*), so you can build automations without touching YAML.
+- Buttons are grouped under the controller device.
+
+### Button LEDs
+
+Keypads with controller-managed indicator LEDs expose a **switch** per button to turn the LED on or off. Because the DALI protocol provides no way to detect whether a given button physically has an LED, these switches are **disabled by default** — enable the ones that correspond to real LEDs on your keypads. State is optimistic (there is no LED-change push event).
+
+### Absolute inputs
+
+DALI absolute inputs are discovered as **binary sensor** entities, treated as an on/off input — `on` when the controller reports a non-zero value, `off` when it reports zero. These are read-only inputs: Home Assistant reflects their state but cannot drive them. The last raw 16-bit value is exposed as the `raw_value` attribute for diagnostics. The sensor has no state until the input first reports.
 
 ---
 
@@ -155,6 +173,14 @@ State is updated optimistically as soon as a command is sent, and confirmed by t
 ### Occupancy sensor stays on / does not clear
 
 The sensor clears automatically after the hold time configured on your zencontrol controller. If the sensor never clears, check the controller's sensor settings to confirm a hold time is set. If the hold time is 0, the integration falls back to a default of 60 seconds.
+
+### A button / absolute input / sensor is discovered but never updates
+
+The entity appears (so discovery found the instance) but its state never changes. This is almost always a **controller-side** issue, not the integration:
+
+- The controller only forwards an instance's events over TPI when that instance is **active in the currently running profile**. An instance that isn't used by the active profile stays silent on the TPI feed **even though the controller's own event log shows it firing**. Enable/use the instance in the active profile on the controller.
+- Absolute inputs emit only on a **value change** — turning a dial or moving a slider. A momentary press may not change the value and therefore emits nothing.
+- Confirm TPI events are reaching Home Assistant at all (e.g. a button on the same controller updates its `event` entity). If nothing from a controller updates, re-check the event transport (unicast/multicast) settings.
 
 ---
 

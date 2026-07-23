@@ -35,7 +35,8 @@ custom_components/zencontrol/
 ├── coordinator.py        ← Per-controller DataUpdateCoordinator
 ├── config_flow.py        ← ConfigFlow + OptionsFlow
 ├── __init__.py           ← async_setup_entry / async_unload_entry
-└── light/scene/select/switch.py  ← HA entity platforms
+├── device_trigger.py     ← Device triggers for push buttons (press/hold)
+└── light/scene/select/switch/binary_sensor/event.py  ← HA entity platforms
 ```
 
 ### TPI protocol key facts
@@ -77,6 +78,15 @@ One `EventListener` UDP socket is shared across all config entries (controllers)
 - `ZenShortAddressLight` / `ZenRelaySwitch` target the raw short address (0–63).
 - Relay detection: `DALI_HW_RELAY` flag in `DALI_QUERY_CG_TYPE` response → `switch.py` instead of `light.py`.
 - Colour mode for short addresses is resolved from `QUERY_DALI_COLOUR_FEATURES` at discovery time.
+
+### Control-device instances (occupancy, buttons, absolute inputs)
+
+- `coordinator._discover_instances()` does a single walk over control devices (`QUERY_DALI_ADDRESSES_WITH_INSTANCES` → `QUERY_INSTANCES_BY_ADDRESS`) and dispatches each instance by `InstanceType`: occupancy → `binary_sensor.py`, push button → `event.py` (+ `switch.py` LED), absolute input → `binary_sensor.py` (on/off, read-only).
+- All instance addresses are DALI **CD addresses (64–127)**; the event `target` is already in this range (no +64 needed, unlike group addresses).
+- **Buttons** are transient: `_handle_button` fires the `SIGNAL_BUTTON_EVENT` dispatcher signal `(cd, instance, event_type)`. Both the `event` entity and `device_trigger.py` subscribe to this single signal — there is no coordinator-data state for buttons.
+- **Button LEDs** (`OVERRIDE_DALI_BUTTON_LED_STATE` / `QUERY_LAST_KNOWN_DALI_BUTTON_LED_STATE`): no "has LED" query exists, so LED switches are created for every button but `entity_registry_enabled_default` is set to whether a definite state was read at discovery. State is optimistic.
+- **Absolute inputs** are stateful, read-only on/off: `_handle_absolute_input` stores the raw 16-bit value and calls `async_set_updated_data`; the `binary_sensor` is `on` when the value is non-zero. They emit only on a value *change* (turning a dial), not on a press.
+- **Gotcha — events require an active profile:** the controller only forwards an instance's TPI events when that instance is active in the *running profile*. An inactive instance stays silent on the TPI feed even though it appears in discovery and in the controller's own event log. If an entity never updates but no TPI event arrives, check the controller profile before suspecting this code.
 
 ### Colour handling
 

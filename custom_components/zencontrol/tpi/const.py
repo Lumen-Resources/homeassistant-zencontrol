@@ -261,6 +261,17 @@ class InstanceType(IntEnum):
     GENERAL_PURPOSE = 0x06
 
 
+# ---------------------------------------------------------------------------
+# Instance binary states (used by OVERRIDE_DALI_BUTTON_LED_STATE and
+# QUERY_LAST_KNOWN_DALI_BUTTON_LED_STATE). Note: logical low/high are not 0/1.
+# ---------------------------------------------------------------------------
+
+class InstanceBinaryState(IntEnum):
+    UNKNOWN = 0x00
+    LO = 0x01        # Logical low  → LED off
+    HI = 0x02        # Logical high → LED on
+
+
 def parse_colour_features(byte: int) -> dict:
     """Parse the colour features byte into a dict of capabilities."""
     return {

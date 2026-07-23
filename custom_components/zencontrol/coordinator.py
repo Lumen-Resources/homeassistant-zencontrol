@@ -8,11 +8,14 @@ from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    BUTTON_EVENT_HOLD,
+    BUTTON_EVENT_PRESS,
     CONF_EVENT_PORT,
     CONF_HOST,
     CONF_PORT,
@@ -24,6 +27,7 @@ from .const import (
     INTEGRATION_AUTHOR,
     INTEGRATION_AUTHOR_URL,
     PING_INTERVAL,
+    SIGNAL_BUTTON_EVENT,
 )
 from .tpi import (
     ARC_LEVEL_MIXED,
@@ -66,10 +70,27 @@ SCAN_INTERVAL = timedelta(seconds=PING_INTERVAL)
 @dataclass
 class OccupancySensorInfo:
     """Metadata for one occupancy sensor instance on a DALI control device."""
-    cd_address: int          # Control device short address (0-63)
+    cd_address: int          # Control device DALI address (64-127)
     instance_number: int     # Instance number on that device
     label: str = ""
     hold_time_s: int = 60    # How long to stay "occupied" after last detection
+
+
+@dataclass
+class ButtonInfo:
+    """Metadata for one push-button instance on a DALI control device."""
+    cd_address: int          # Control device DALI address (64-127)
+    instance_number: int     # Instance number on that device
+    label: str = ""
+    has_led: bool = False    # Whether an LED state was reported for this button
+
+
+@dataclass
+class AbsoluteInputInfo:
+    """Metadata for one absolute-input instance (dial/slider) on a control device."""
+    cd_address: int          # Control device DALI address (64-127)
+    instance_number: int     # Instance number on that device
+    label: str = ""
 
 
 @dataclass
@@ -113,6 +134,16 @@ class ControllerState:
     occupancy_sensors: list[OccupancySensorInfo] = field(default_factory=list)
     # Live occupancy state keyed by (cd_address, instance_number)
     sensor_occupancy: dict[tuple[int, int], bool] = field(default_factory=dict)
+
+    # Push buttons (auto-discovered)
+    buttons: list[ButtonInfo] = field(default_factory=list)
+    # Last-known LED state keyed by (cd_address, instance_number)
+    button_led_state: dict[tuple[int, int], bool] = field(default_factory=dict)
+
+    # Absolute inputs / dials (auto-discovered)
+    absolute_inputs: list[AbsoluteInputInfo] = field(default_factory=list)
+    # Live absolute input value keyed by (cd_address, instance_number)
+    absolute_values: dict[tuple[int, int], int] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -228,19 +259,22 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         # Short addresses (auto-discovered)
         await self._discover_short_addresses()
 
-        # Occupancy sensors (auto-discovered)
-        await self._discover_occupancy_sensors()
+        # Control-device instances: occupancy sensors, push buttons, absolute inputs
+        await self._discover_instances()
 
         # Initial state poll for all known addresses
         await self._poll_all_states()
 
         _LOGGER.debug(
-            "Discovery complete for %s: %d groups, %d short addresses, %d profiles, %d occupancy sensors",
+            "Discovery complete for %s: %d groups, %d short addresses, %d profiles, "
+            "%d occupancy sensors, %d buttons, %d absolute inputs",
             self._host,
             len(self.data.groups),
             len(self.data.short_addresses),
             len(self.data.profile_info.profiles),
             len(self.data.occupancy_sensors),
+            len(self.data.buttons),
+            len(self.data.absolute_inputs),
         )
 
     async def _discover_short_addresses(self) -> None:
@@ -267,8 +301,13 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             if addr not in self.data.device_states:
                 self.data.device_states[addr] = DeviceState()
 
-    async def _discover_occupancy_sensors(self) -> None:
-        """Auto-discover all DALI occupancy sensor instances on the controller."""
+    async def _discover_instances(self) -> None:
+        """Auto-discover all DALI control-device instances in a single pass.
+
+        Walks every control device that reports instances and dispatches each
+        instance to the appropriate handler by type — occupancy sensors, push
+        buttons, and absolute inputs. Other instance types are ignored.
+        """
         cd_addresses = await self.commands.query_addresses_with_instances()
         _LOGGER.debug(
             "Found %d control devices with instances on %s: %s",
@@ -278,50 +317,112 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         for cd_addr in cd_addresses:
             instances = await self.commands.query_instances_by_address(cd_addr)
             for inst in instances:
-                if inst.instance_type != InstanceType.OCCUPANCY_SENSOR:
-                    continue
+                if inst.instance_type == InstanceType.OCCUPANCY_SENSOR:
+                    await self._add_occupancy_sensor(cd_addr, inst, instances)
+                elif inst.instance_type == InstanceType.PUSH_BUTTON:
+                    await self._add_button(cd_addr, inst, instances)
+                elif inst.instance_type == InstanceType.ABSOLUTE_INPUT:
+                    await self._add_absolute_input(cd_addr, inst, instances)
 
-                # Fetch label and timer info
-                # cd_addr is a DALI CD address (64-127); QUERY_DALI_DEVICE_LABEL accepts this range
-                label = await self.commands.query_instance_label(cd_addr, inst.instance_number)
-                timer = await self.commands.query_occupancy_timer(cd_addr, inst.instance_number)
+    async def _instance_label(
+        self, cd_addr: int, inst: InstanceInfo, instances: list[InstanceInfo],
+        suffix: str,
+    ) -> str:
+        """Resolve a display label for an instance.
 
-                # Derive a label: use instance label, or fall back to device label + "Occupancy"
-                if not label:
-                    device_label = (
-                        await self.commands.query_device_label(cd_addr)
-                        or f"Sensor {cd_addr - 64}"
-                    )
-                    occ_count = sum(
-                        1 for i in instances if i.instance_type == InstanceType.OCCUPANCY_SENSOR
-                    )
-                    label = f"{device_label} Occupancy"
-                    if occ_count > 1:
-                        label = f"{label} {inst.instance_number}"
+        Prefers the instance's own label; otherwise falls back to the device
+        label plus *suffix*, appending the instance number when a device has
+        more than one instance of the same type.
+        """
+        label = await self.commands.query_instance_label(cd_addr, inst.instance_number)
+        if label:
+            return label
+        device_label = (
+            await self.commands.query_device_label(cd_addr)
+            or f"Device {cd_addr - 64}"
+        )
+        same_type = sum(
+            1 for i in instances if i.instance_type == inst.instance_type
+        )
+        label = f"{device_label} {suffix}"
+        if same_type > 1:
+            label = f"{label} {inst.instance_number}"
+        return label
 
-                sensor = OccupancySensorInfo(
-                    cd_address=cd_addr,
-                    instance_number=inst.instance_number,
-                    label=label,
-                    hold_time_s=timer.hold_time_s,
-                )
-                self.data.occupancy_sensors.append(sensor)
+    async def _add_occupancy_sensor(
+        self, cd_addr: int, inst: InstanceInfo, instances: list[InstanceInfo],
+    ) -> None:
+        """Register one occupancy sensor instance and seed its initial state."""
+        label = await self._instance_label(cd_addr, inst, instances, "Occupancy")
+        timer = await self.commands.query_occupancy_timer(cd_addr, inst.instance_number)
 
-                # Set initial state: occupied if the hold timer hasn't expired yet
-                key = (cd_addr, inst.instance_number)
-                occupied = timer.last_detect_s < timer.hold_time_s
-                self.data.sensor_occupancy[key] = occupied
-                _LOGGER.debug(
-                    "Occupancy sensor: addr=%d inst=%d label='%s' hold=%ds last_detect=%ds → %s",
-                    cd_addr, inst.instance_number, label,
-                    timer.hold_time_s, timer.last_detect_s,
-                    "occupied" if occupied else "clear",
-                )
+        sensor = OccupancySensorInfo(
+            cd_address=cd_addr,
+            instance_number=inst.instance_number,
+            label=label,
+            hold_time_s=timer.hold_time_s,
+        )
+        self.data.occupancy_sensors.append(sensor)
 
-                # If currently occupied, start the hold timer for the remaining time
-                if occupied:
-                    remaining = max(1, timer.hold_time_s - timer.last_detect_s)
-                    self._start_occupancy_timer(key, remaining)
+        # Set initial state: occupied if the hold timer hasn't expired yet
+        key = (cd_addr, inst.instance_number)
+        occupied = timer.last_detect_s < timer.hold_time_s
+        self.data.sensor_occupancy[key] = occupied
+        _LOGGER.debug(
+            "Occupancy sensor: addr=%d inst=%d label='%s' hold=%ds last_detect=%ds → %s",
+            cd_addr, inst.instance_number, label,
+            timer.hold_time_s, timer.last_detect_s,
+            "occupied" if occupied else "clear",
+        )
+
+        # If currently occupied, start the hold timer for the remaining time
+        if occupied:
+            remaining = max(1, timer.hold_time_s - timer.last_detect_s)
+            self._start_occupancy_timer(key, remaining)
+
+    async def _add_button(
+        self, cd_addr: int, inst: InstanceInfo, instances: list[InstanceInfo],
+    ) -> None:
+        """Register one push-button instance and query its initial LED state."""
+        label = await self._instance_label(cd_addr, inst, instances, "Button")
+
+        # Query the last-known LED state. A non-None result means the button
+        # has a controller-managed LED; None means unknown/none.
+        led = await self.commands.query_button_led_state(cd_addr, inst.instance_number)
+        key = (cd_addr, inst.instance_number)
+        if led is not None:
+            self.data.button_led_state[key] = led
+
+        self.data.buttons.append(
+            ButtonInfo(
+                cd_address=cd_addr,
+                instance_number=inst.instance_number,
+                label=label,
+                has_led=led is not None,
+            )
+        )
+        _LOGGER.debug(
+            "Push button: addr=%d inst=%d label='%s' led=%s",
+            cd_addr, inst.instance_number, label,
+            "unknown" if led is None else ("on" if led else "off"),
+        )
+
+    async def _add_absolute_input(
+        self, cd_addr: int, inst: InstanceInfo, instances: list[InstanceInfo],
+    ) -> None:
+        """Register one absolute-input (dial/slider) instance."""
+        label = await self._instance_label(cd_addr, inst, instances, "Input")
+        self.data.absolute_inputs.append(
+            AbsoluteInputInfo(
+                cd_address=cd_addr,
+                instance_number=inst.instance_number,
+                label=label,
+            )
+        )
+        _LOGGER.debug(
+            "Absolute input: addr=%d inst=%d label='%s'",
+            cd_addr, inst.instance_number, label,
+        )
 
     async def _poll_all_states(self) -> None:
         """Poll the current arc level (and colour) for all known addresses."""
@@ -454,6 +555,12 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
                 self._handle_profile_changed(event)
             elif event.event_type == EventType.OCCUPANCY:
                 self._handle_occupancy(event)
+            elif event.event_type == EventType.BUTTON_PRESS:
+                self._handle_button(event, BUTTON_EVENT_PRESS)
+            elif event.event_type == EventType.BUTTON_HOLD:
+                self._handle_button(event, BUTTON_EVENT_HOLD)
+            elif event.event_type == EventType.ABSOLUTE_INPUT:
+                self._handle_absolute_input(event)
         except Exception:
             _LOGGER.exception("Error handling TPI event type 0x%02X", event.event_type)
 
@@ -537,6 +644,41 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         # Mark occupied and restart the hold timer
         self.data.sensor_occupancy[key] = True
         self._start_occupancy_timer(key, hold_time_s)
+        self.async_set_updated_data(self.data)
+
+    def _handle_button(self, event: TpiEvent, event_type: str) -> None:
+        """BUTTON_PRESS/HOLD_EVENT: target = cd_address, data = [instance_number].
+
+        Buttons are transient events, not state. We fan out to the matching
+        `event` entity and any device-trigger automations via a dispatcher
+        signal — no coordinator data update.
+        """
+        if not event.data:
+            return
+        cd_address = event.target
+        instance_number = event.data[0]
+        _LOGGER.debug(
+            "Button %s: addr=%d inst=%d", event_type, cd_address, instance_number
+        )
+        async_dispatcher_send(
+            self.hass,
+            SIGNAL_BUTTON_EVENT.format(self._entry_id),
+            cd_address,
+            instance_number,
+            event_type,
+        )
+
+    def _handle_absolute_input(self, event: TpiEvent) -> None:
+        """ABSOLUTE_INPUT_EVENT: target = cd_address, data = [instance, hi, lo]."""
+        if len(event.data) < 3:
+            return
+        cd_address = event.target
+        instance_number = event.data[0]
+        value = (event.data[1] << 8) | event.data[2]
+        _LOGGER.debug(
+            "Absolute input: addr=%d inst=%d value=%d", cd_address, instance_number, value
+        )
+        self.data.absolute_values[(cd_address, instance_number)] = value
         self.async_set_updated_data(self.data)
 
     def _start_occupancy_timer(self, key: tuple[int, int], delay_s: int) -> None:

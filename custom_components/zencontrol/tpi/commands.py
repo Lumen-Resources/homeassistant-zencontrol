@@ -17,6 +17,7 @@ from .const import (
     ColourType,
     DaliCgTypeMask,
     DaliStatusMask,
+    InstanceBinaryState,
     InstanceType,
     ResponseType,
     TpiEventMode,
@@ -608,6 +609,47 @@ class ZenCommands:
         )
         if resp and resp.has_data:
             return resp.data.decode("utf-8", errors="replace")
+        return None
+
+    # ------------------------------------------------------------------
+    # Push button LED control
+    # ------------------------------------------------------------------
+
+    async def override_button_led(
+        self, cd_address: int, instance_number: int, on: bool
+    ) -> bool:
+        """Override a push-button's LED state.
+
+        cd_address is the DALI CD address (64-127). The desired state is an
+        Instance Binary State: HI (0x02) = on, LO (0x01) = off.
+        """
+        state = InstanceBinaryState.HI if on else InstanceBinaryState.LO
+        resp = await self._send(
+            Command.OVERRIDE_DALI_BUTTON_LED_STATE,
+            address=cd_address,
+            data_mid=int(state),
+            data_lo=instance_number,
+        )
+        return resp is not None and resp.ok
+
+    async def query_button_led_state(
+        self, cd_address: int, instance_number: int
+    ) -> bool | None:
+        """Return the last-known LED state for a push button.
+
+        Returns True (on), False (off), or None if unknown/unavailable.
+        Note: the "last known" state may not reflect the physical LED.
+        """
+        resp = await self._send(
+            Command.QUERY_LAST_KNOWN_DALI_BUTTON_LED_STATE,
+            address=cd_address,
+            data_lo=instance_number,
+        )
+        if resp and resp.has_data:
+            if resp.data[0] == InstanceBinaryState.HI:
+                return True
+            if resp.data[0] == InstanceBinaryState.LO:
+                return False
         return None
 
     # ------------------------------------------------------------------

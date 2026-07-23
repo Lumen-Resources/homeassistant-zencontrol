@@ -62,5 +62,11 @@
     "abort": {
       "no_scenes": "No scenes are currently configured."
     }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "press": "\"{subtype}\" pressed",
+      "hold": "\"{subtype}\" held"
+    }
   }
 }

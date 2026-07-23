@@ -30,10 +30,21 @@ UID_SHORT = "short"
 UID_SCENE = "scene"
 UID_PROFILE = "profile"
 UID_OCCUPANCY = "occupancy"
+UID_BUTTON = "button"
+UID_ABSOLUTE = "absolute"
+UID_BUTTON_LED = "button_led"
 
 # HA data keys (stored in hass.data[DOMAIN])
 DATA_COORDINATOR = "coordinator"
 DATA_EVENT_LISTENER = "event_listener"
+
+# Button event types (exposed on the HA `event` entity and device triggers)
+BUTTON_EVENT_PRESS = "press"
+BUTTON_EVENT_HOLD = "hold"
+
+# Dispatcher signal fired for each button press/hold.
+# Format args: entry_id.  Payload: (cd_address, instance_number, event_type).
+SIGNAL_BUTTON_EVENT = "zencontrol_button_event_{}"
 
 
 def get_entry_config(entry) -> dict:
