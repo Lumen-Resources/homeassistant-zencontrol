@@ -20,12 +20,16 @@ from .const import (
     CONF_SCENE_NAME,
     CONF_SCENE_NUMBER,
     CONF_SCENES,
+    CONF_SYSTEM_VARIABLES,
+    CONF_SYSVAR_NAME,
+    CONF_SYSVAR_NUMBER,
     CONF_USE_MULTICAST,
     DATA_COORDINATOR,
     DEFAULT_EVENT_PORT,
     DEFAULT_PORT,
     DEFAULT_USE_MULTICAST,
     DOMAIN,
+    get_entry_config,
 )
 from .tpi import DALI_GROUP_OFFSET, TpiClient, ZenCommands
 
@@ -140,9 +144,9 @@ class ZenControlOptionsFlow(OptionsFlow):
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._entry = config_entry
-        self._scenes: list[dict] = list(
-            config_entry.data.get(CONF_SCENES, [])
-        )
+        merged = get_entry_config(config_entry)
+        self._scenes: list[dict] = list(merged.get(CONF_SCENES, []))
+        self._sysvars: list[dict] = list(merged.get(CONF_SYSTEM_VARIABLES, []))
 
     # ------------------------------------------------------------------
     # Main menu
@@ -155,6 +159,7 @@ class ZenControlOptionsFlow(OptionsFlow):
             step_id="init",
             menu_options=[
                 "add_scene", "remove_scene",
+                "add_system_variable", "remove_system_variable",
                 "done",
             ],
         )
@@ -273,6 +278,72 @@ class ZenControlOptionsFlow(OptionsFlow):
         )
 
     # ------------------------------------------------------------------
+    # System variable management
+    # ------------------------------------------------------------------
+
+    async def async_step_add_system_variable(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manually add a system variable to expose as a sensor.
+
+        Useful on non-Pro controllers (which can't be auto-discovered by name)
+        or to expose an unnamed variable.
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            number = user_input[CONF_SYSVAR_NUMBER]
+            name = user_input.get(CONF_SYSVAR_NAME, "").strip()
+            if any(sv[CONF_SYSVAR_NUMBER] == number for sv in self._sysvars):
+                errors["base"] = "sysvar_exists"
+            else:
+                self._sysvars.append({
+                    CONF_SYSVAR_NUMBER: number,
+                    CONF_SYSVAR_NAME: name or f"System Variable {number}",
+                })
+                return await self.async_step_init()
+
+        return self.async_show_form(
+            step_id="add_system_variable",
+            data_schema=vol.Schema({
+                vol.Required(CONF_SYSVAR_NUMBER, default=0): vol.All(
+                    vol.Coerce(int), vol.Range(min=0, max=147)
+                ),
+                vol.Optional(CONF_SYSVAR_NAME, default=""): str,
+            }),
+            errors=errors,
+        )
+
+    async def async_step_remove_system_variable(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if user_input is not None:
+            idx = int(user_input["sysvar_index"])
+            if 0 <= idx < len(self._sysvars):
+                self._sysvars.pop(idx)
+            return await self.async_step_init()
+
+        if not self._sysvars:
+            return self.async_abort(reason="no_sysvars")
+
+        options = [
+            {
+                "value": str(i),
+                "label": s.get(CONF_SYSVAR_NAME) or f"System Variable {s[CONF_SYSVAR_NUMBER]}",
+            }
+            for i, s in enumerate(self._sysvars)
+        ]
+
+        return self.async_show_form(
+            step_id="remove_system_variable",
+            data_schema=vol.Schema({
+                vol.Required("sysvar_index"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=options)
+                ),
+            }),
+        )
+
+    # ------------------------------------------------------------------
     # Save
     # ------------------------------------------------------------------
 
@@ -281,6 +352,7 @@ class ZenControlOptionsFlow(OptionsFlow):
     ) -> FlowResult:
         new_data = dict(self._entry.data)
         new_data[CONF_SCENES] = self._scenes
+        new_data[CONF_SYSTEM_VARIABLES] = self._sysvars
         return self.async_create_entry(title="", data=new_data)
 
     # ------------------------------------------------------------------

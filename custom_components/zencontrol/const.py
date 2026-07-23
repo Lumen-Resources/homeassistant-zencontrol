@@ -15,6 +15,9 @@ CONF_SCENES = "scenes"                     # list[dict] — manually configured 
 CONF_SCENE_ADDRESS = "scene_address"       # DALI address for scene (0-79)
 CONF_SCENE_NUMBER = "scene_number"         # scene number 0-12
 CONF_SCENE_NAME = "scene_name"             # optional display name
+CONF_SYSTEM_VARIABLES = "system_variables" # list[dict] — manually configured system variables
+CONF_SYSVAR_NUMBER = "sysvar_number"       # system variable index (0-147)
+CONF_SYSVAR_NAME = "sysvar_name"           # display name
 
 # Defaults
 DEFAULT_PORT = 5108
@@ -33,6 +36,7 @@ UID_OCCUPANCY = "occupancy"
 UID_BUTTON = "button"
 UID_ABSOLUTE = "absolute"
 UID_BUTTON_LED = "button_led"
+UID_SYSVAR = "sysvar"
 
 # HA data keys (stored in hass.data[DOMAIN])
 DATA_COORDINATOR = "coordinator"
