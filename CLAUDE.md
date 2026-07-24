@@ -87,7 +87,9 @@ One `EventListener` UDP socket is shared across all config entries (controllers)
 - `ZenShortAddressLight` / `ZenRelaySwitch` target the raw short address (0–63).
 - **Device tree:** controller device holds groups/scenes/profile/sysvars; each short address gets its own HA device (`{entry_id}_sa_{addr}`, via `device_info_for_short_address`); each control device gets one (`{entry_id}_cd_{addr}`, via `device_info_for_cd`, named from `cd_labels`). All entities set `_attr_has_entity_name = True`; primary entities of their own device (fixture lights, relays) use `name=None`.
 - **Discovery is concurrent:** per-address/per-CD metadata queries run under `_query_sem` (Semaphore(16)) via `_bounded()`; queries within one device stay sequential. `TpiClient.next_seq()` skips in-flight seq numbers, so parallelism can't corrupt request/response matching.
-- Relay detection: `DALI_HW_RELAY` flag in `DALI_QUERY_CG_TYPE` response → `switch.py` instead of `light.py`.
+- **Load-type routing:** `coordinator.resolved_load_type(addr)` returns `light`/`switch`/`cover`/`fan`. Default is capability-based (relay → switch via `DALI_QUERY_CG_TYPE`, else light); a manual `CONF_LOAD_OVERRIDES` entry wins. Each platform (`light`/`switch`/`cover`/`fan`) filters its short addresses on this, so an address registers exactly once. Blinds/fans are protocol-indistinguishable from switches/lights, hence the manual override.
+- **Covers** (`cover.py`): position ↔ arc 0–254 (invert-aware), **stop → arc 255** (`COVER_STOP_ARC`).
+- **Fans** (`fan.py`): named preset modes, each a `{name, level}`; `set_preset_mode` sends the level. Speed tables are generated/parsed by the HA-free `fan_speeds.py` (unit-tested).
 - Colour mode for short addresses is resolved from `QUERY_DALI_COLOUR_FEATURES` at discovery time.
 
 ### Control-device instances (occupancy, buttons, absolute inputs)

@@ -35,6 +35,9 @@
           "remove_scene": "Remove a scene",
           "add_system_variable": "Add a system variable",
           "remove_system_variable": "Remove a system variable",
+          "add_load": "Add a load override (light/switch/cover/fan)",
+          "edit_fan": "Edit fan speeds",
+          "remove_load": "Remove a load override",
           "done": "Save and finish"
         }
       },
@@ -69,17 +72,66 @@
         "data": {
           "sysvar_index": "System variable"
         }
+      },
+      "add_load": {
+        "title": "Add Load Override",
+        "description": "Force a DALI short address to a specific Home Assistant entity type. By default, dimmable loads become lights and relays become switches — use this to make a load a cover (blind) or fan instead, or to force light/switch.",
+        "data": {
+          "load_address": "Short address (0–63)",
+          "load_type": "Entity type",
+          "load_name": "Display name (optional)"
+        }
+      },
+      "add_cover": {
+        "title": "Cover Options",
+        "description": "Configure the blind. Enable invert if the open/closed ends are the wrong way around.",
+        "data": {
+          "cover_invert": "Invert open/closed direction",
+          "cover_device_class": "Cover type"
+        }
+      },
+      "add_fan": {
+        "title": "Fan Speeds",
+        "description": "Choose how many speeds the fan has. A default speed table is generated (evenly spaced, top speed at maximum) and can be retuned later via 'Edit fan speeds'.",
+        "data": {
+          "speed_count": "Number of speeds"
+        }
+      },
+      "edit_fan": {
+        "title": "Edit Fan Speeds",
+        "description": "Select the fan to retune.",
+        "data": {
+          "fan_address": "Fan"
+        }
+      },
+      "edit_fan_speeds": {
+        "title": "Fan Speed Table",
+        "description": "Edit the speed table as 'Name:level' entries separated by commas, e.g. 'Low:85, Medium:169, High:254'. Levels are DALI arc levels 1–254 and must ascend.",
+        "data": {
+          "fan_speeds": "Speeds"
+        }
+      },
+      "remove_load": {
+        "title": "Remove Load Override",
+        "description": "Select the load override to remove (the address reverts to automatic detection).",
+        "data": {
+          "load_index": "Load override"
+        }
       }
     },
     "error": {
       "invalid_group": "Group number must be between 0 and 15.",
       "invalid_address": "Address must be between 0 and 63.",
       "scene_exists": "A scene with this target and scene number is already configured.",
-      "sysvar_exists": "That system variable number is already configured."
+      "sysvar_exists": "That system variable number is already configured.",
+      "load_exists": "That short address already has an override.",
+      "invalid_fan_speeds": "Invalid speed table. Use 'Name:level' entries, levels 1–254, ascending."
     },
     "abort": {
       "no_scenes": "No scenes are currently configured.",
-      "no_sysvars": "No system variables are currently configured."
+      "no_sysvars": "No system variables are currently configured.",
+      "no_fans": "No fan overrides are currently configured.",
+      "no_loads": "No load overrides are currently configured."
     }
   },
   "device_automation": {
