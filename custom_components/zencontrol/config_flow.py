@@ -18,6 +18,13 @@ from .const import (
     CONF_PORT,
     CONF_SCENE_ADDRESS,
     CONF_SCENE_NAME,
+    CONF_COVER_DEVICE_CLASS,
+    CONF_COVER_INVERT,
+    CONF_FAN_SPEEDS,
+    CONF_LOAD_ADDRESS,
+    CONF_LOAD_NAME,
+    CONF_LOAD_OVERRIDES,
+    CONF_LOAD_TYPE,
     CONF_SCENE_NUMBER,
     CONF_SCENES,
     CONF_SYSTEM_VARIABLES,
@@ -29,8 +36,13 @@ from .const import (
     DEFAULT_PORT,
     DEFAULT_USE_MULTICAST,
     DOMAIN,
+    LOAD_TYPE_COVER,
+    LOAD_TYPE_FAN,
+    LOAD_TYPE_LIGHT,
+    LOAD_TYPE_SWITCH,
     get_entry_config,
 )
+from .fan_speeds import default_fan_speeds, format_fan_speeds, parse_fan_speeds
 from .tpi import DALI_GROUP_OFFSET, TpiClient, ZenCommands
 
 _LOGGER = logging.getLogger(__name__)
@@ -140,13 +152,16 @@ class ZenControlConfigFlow(ConfigFlow, domain=DOMAIN):
 # ---------------------------------------------------------------------------
 
 class ZenControlOptionsFlow(OptionsFlow):
-    """Allow users to manage manually configured scenes."""
+    """Allow users to manage scenes, system variables, and load-type overrides."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._entry = config_entry
         merged = get_entry_config(config_entry)
         self._scenes: list[dict] = list(merged.get(CONF_SCENES, []))
         self._sysvars: list[dict] = list(merged.get(CONF_SYSTEM_VARIABLES, []))
+        self._loads: list[dict] = list(merged.get(CONF_LOAD_OVERRIDES, []))
+        self._pending_load: dict = {}  # carried between add steps
+        self._edit_fan_addr: int | None = None  # fan being edited
 
     # ------------------------------------------------------------------
     # Main menu
@@ -160,6 +175,7 @@ class ZenControlOptionsFlow(OptionsFlow):
             menu_options=[
                 "add_scene", "remove_scene",
                 "add_system_variable", "remove_system_variable",
+                "add_load", "edit_fan", "remove_load",
                 "done",
             ],
         )
@@ -344,6 +360,192 @@ class ZenControlOptionsFlow(OptionsFlow):
         )
 
     # ------------------------------------------------------------------
+    # Load-type overrides (light / switch / cover / fan)
+    # ------------------------------------------------------------------
+
+    async def async_step_add_load(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Choose a short address and the HA entity type to force it to."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            address = user_input[CONF_LOAD_ADDRESS]
+            if any(l[CONF_LOAD_ADDRESS] == address for l in self._loads):
+                errors["base"] = "load_exists"
+            else:
+                self._pending_load = {
+                    CONF_LOAD_ADDRESS: address,
+                    CONF_LOAD_TYPE: user_input[CONF_LOAD_TYPE],
+                    CONF_LOAD_NAME: user_input.get(CONF_LOAD_NAME, "").strip(),
+                }
+                load_type = self._pending_load[CONF_LOAD_TYPE]
+                if load_type == LOAD_TYPE_COVER:
+                    return await self.async_step_add_cover()
+                if load_type == LOAD_TYPE_FAN:
+                    return await self.async_step_add_fan()
+                self._loads.append(self._pending_load)
+                self._pending_load = {}
+                return await self.async_step_init()
+
+        return self.async_show_form(
+            step_id="add_load",
+            data_schema=vol.Schema({
+                vol.Required(CONF_LOAD_ADDRESS, default=0): vol.All(
+                    vol.Coerce(int), vol.Range(min=0, max=63)
+                ),
+                vol.Required(CONF_LOAD_TYPE, default=LOAD_TYPE_LIGHT): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": LOAD_TYPE_LIGHT, "label": "Light"},
+                            {"value": LOAD_TYPE_SWITCH, "label": "Switch (on/off)"},
+                            {"value": LOAD_TYPE_COVER, "label": "Cover / blind"},
+                            {"value": LOAD_TYPE_FAN, "label": "Fan"},
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+                vol.Optional(CONF_LOAD_NAME, default=""): str,
+            }),
+            errors=errors,
+        )
+
+    async def async_step_add_cover(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if user_input is not None:
+            self._pending_load[CONF_COVER_INVERT] = user_input[CONF_COVER_INVERT]
+            self._pending_load[CONF_COVER_DEVICE_CLASS] = user_input[CONF_COVER_DEVICE_CLASS]
+            self._loads.append(self._pending_load)
+            self._pending_load = {}
+            return await self.async_step_init()
+
+        return self.async_show_form(
+            step_id="add_cover",
+            data_schema=vol.Schema({
+                vol.Required(CONF_COVER_INVERT, default=False): bool,
+                vol.Required(CONF_COVER_DEVICE_CLASS, default="blind"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "blind", "label": "Blind"},
+                            {"value": "shade", "label": "Shade"},
+                            {"value": "curtain", "label": "Curtain"},
+                        ],
+                    )
+                ),
+            }),
+        )
+
+    async def async_step_add_fan(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Pick a speed count; a default speed table is generated (editable later)."""
+        if user_input is not None:
+            self._pending_load[CONF_FAN_SPEEDS] = default_fan_speeds(
+                user_input["speed_count"]
+            )
+            self._loads.append(self._pending_load)
+            self._pending_load = {}
+            return await self.async_step_init()
+
+        return self.async_show_form(
+            step_id="add_fan",
+            data_schema=vol.Schema({
+                vol.Required("speed_count", default=3): vol.All(
+                    vol.Coerce(int), vol.Range(min=2, max=6)
+                ),
+            }),
+        )
+
+    async def async_step_edit_fan(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select a configured fan to retune its speed table."""
+        fans = [l for l in self._loads if l[CONF_LOAD_TYPE] == LOAD_TYPE_FAN]
+        if not fans:
+            return self.async_abort(reason="no_fans")
+        if user_input is not None:
+            self._edit_fan_addr = int(user_input["fan_address"])
+            return await self.async_step_edit_fan_speeds()
+
+        options = [
+            {
+                "value": str(l[CONF_LOAD_ADDRESS]),
+                "label": l.get(CONF_LOAD_NAME) or f"Fan @ address {l[CONF_LOAD_ADDRESS]}",
+            }
+            for l in fans
+        ]
+        return self.async_show_form(
+            step_id="edit_fan",
+            data_schema=vol.Schema({
+                vol.Required("fan_address"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=options)
+                ),
+            }),
+        )
+
+    async def async_step_edit_fan_speeds(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        errors: dict[str, str] = {}
+        load = next(
+            (
+                l for l in self._loads
+                if l[CONF_LOAD_ADDRESS] == self._edit_fan_addr
+                and l[CONF_LOAD_TYPE] == LOAD_TYPE_FAN
+            ),
+            None,
+        )
+        if load is None:
+            return await self.async_step_init()
+        if user_input is not None:
+            try:
+                load[CONF_FAN_SPEEDS] = parse_fan_speeds(user_input[CONF_FAN_SPEEDS])
+                self._edit_fan_addr = None
+                return await self.async_step_init()
+            except ValueError:
+                errors["base"] = "invalid_fan_speeds"
+
+        return self.async_show_form(
+            step_id="edit_fan_speeds",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_FAN_SPEEDS,
+                    default=format_fan_speeds(load.get(CONF_FAN_SPEEDS, [])),
+                ): str,
+            }),
+            errors=errors,
+        )
+
+    async def async_step_remove_load(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if user_input is not None:
+            idx = int(user_input["load_index"])
+            if 0 <= idx < len(self._loads):
+                self._loads.pop(idx)
+            return await self.async_step_init()
+
+        if not self._loads:
+            return self.async_abort(reason="no_loads")
+
+        options = [
+            {
+                "value": str(i),
+                "label": f"{l.get(CONF_LOAD_NAME) or 'address ' + str(l[CONF_LOAD_ADDRESS])} "
+                         f"({l[CONF_LOAD_TYPE]})",
+            }
+            for i, l in enumerate(self._loads)
+        ]
+        return self.async_show_form(
+            step_id="remove_load",
+            data_schema=vol.Schema({
+                vol.Required("load_index"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=options)
+                ),
+            }),
+        )
+
+    # ------------------------------------------------------------------
     # Save
     # ------------------------------------------------------------------
 
@@ -353,6 +555,7 @@ class ZenControlOptionsFlow(OptionsFlow):
         new_data = dict(self._entry.data)
         new_data[CONF_SCENES] = self._scenes
         new_data[CONF_SYSTEM_VARIABLES] = self._sysvars
+        new_data[CONF_LOAD_OVERRIDES] = self._loads
         return self.async_create_entry(title="", data=new_data)
 
     # ------------------------------------------------------------------

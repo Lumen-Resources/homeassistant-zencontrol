@@ -62,6 +62,8 @@ After setup, the integration creates the following entities for each controller:
 | **Light** (group) | A DALI lighting group | Auto-discovered from the controller |
 | **Light** (short address) | An individual DALI fixture | Auto-discovered |
 | **Switch** (relay) | A DALI relay output | Auto-discovered; detected by device type |
+| **Cover** | A blind on a relay load | Manual override; position + stop — see below |
+| **Fan** | A fan on a relay/dimmable load | Manual override; named speeds — see below |
 | **Switch** (button LED) | A keypad push-button indicator LED | Auto-discovered; disabled by default — see below |
 | **Binary sensor** (occupancy) | An occupancy / motion sensor | Auto-discovered; see below |
 | **Binary sensor** (absolute input) | A DALI absolute input, as on/off | Auto-discovered; see below |
@@ -116,6 +118,13 @@ Keypads with controller-managed indicator LEDs expose a **switch** per button to
 ### Absolute inputs
 
 DALI absolute inputs are discovered as **binary sensor** entities, treated as an on/off input — `on` when the controller reports a non-zero value, `off` when it reports zero. These are read-only inputs: Home Assistant reflects their state but cannot drive them. The last raw 16-bit value is exposed as the `raw_value` attribute for diagnostics. The sensor has no state until the input first reports.
+
+### Load-type overrides — covers (blinds) and fans
+
+DALI relay loads are auto-detected as on/off **switches** and dimmable loads as **lights**. Some relay loads are really **blinds** or **fans**, which are indistinguishable from a switch/light at the protocol level, so you assign these explicitly in the integration options (Settings → Devices & Services → zencontrol → Configure → *Add a load override*). A short address can be forced to **light**, **switch**, **cover**, or **fan**; the overridden address is then excluded from the other platforms.
+
+- **Cover (blind):** position maps to the DALI arc level (0–254); **stop** sends arc level 255. Options include *invert* (if the open/closed ends are reversed) and the cover type (blind/shade/curtain).
+- **Fan:** speeds are exposed as named preset modes, each mapped to an arc level. When you add a fan you pick the number of speeds and a sensible default table is generated (e.g. 3 speeds → Low 85 / Medium 169 / High 254); you can retune the names and levels later via *Edit fan speeds*.
 
 ### System variables
 

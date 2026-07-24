@@ -12,11 +12,12 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     DATA_COORDINATOR,
     DOMAIN,
+    LOAD_TYPE_SWITCH,
     UID_BUTTON_LED,
     UID_SHORT,
 )
 from .coordinator import ButtonInfo, DeviceState, ZenControlCoordinator
-from .tpi import ARC_LEVEL_MAX, ARC_LEVEL_OFF, DaliCgTypeMask
+from .tpi import ARC_LEVEL_MAX, ARC_LEVEL_OFF
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,10 +31,9 @@ async def async_setup_entry(
     coordinator: ZenControlCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
     entities: list[SwitchEntity] = []
 
-    # Relay-type short addresses
+    # Short addresses resolved to a plain on/off switch
     for addr in coordinator.data.short_addresses:
-        cg_type = coordinator.data.short_address_types.get(addr, DaliCgTypeMask(0))
-        if DaliCgTypeMask.RELAY in cg_type:
+        if coordinator.resolved_load_type(addr) == LOAD_TYPE_SWITCH:
             entities.append(ZenRelaySwitch(coordinator, entry, addr))
 
     # Push-button LEDs (one per button). The protocol has no "has LED" query,

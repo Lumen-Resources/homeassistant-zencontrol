@@ -24,6 +24,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     DATA_COORDINATOR,
     DOMAIN,
+    LOAD_TYPE_LIGHT,
     UID_GROUP,
     UID_SHORT,
 )
@@ -130,12 +131,10 @@ async def async_setup_entry(
     for group_num, group_info in coordinator.data.groups.items():
         entities.append(ZenGroupLight(coordinator, entry, group_num))
 
-    # --- Short address lights (auto-discovered, not relays) ---
+    # --- Short address lights (resolved type == light) ---
     for addr in coordinator.data.short_addresses:
-        cg_type = coordinator.data.short_address_types.get(addr, DaliCgTypeMask(0))
-        if DaliCgTypeMask.RELAY in cg_type:
-            continue  # Relays go to switch.py
-        entities.append(ZenShortAddressLight(coordinator, entry, addr))
+        if coordinator.resolved_load_type(addr) == LOAD_TYPE_LIGHT:
+            entities.append(ZenShortAddressLight(coordinator, entry, addr))
 
     async_add_entities(entities)
 

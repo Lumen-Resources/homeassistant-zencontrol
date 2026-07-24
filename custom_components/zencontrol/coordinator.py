@@ -18,11 +18,16 @@ from .const import (
     BUTTON_EVENT_PRESS,
     CONF_EVENT_PORT,
     CONF_HOST,
+    CONF_LOAD_ADDRESS,
+    CONF_LOAD_OVERRIDES,
+    CONF_LOAD_TYPE,
     CONF_PORT,
     CONF_SYSTEM_VARIABLES,
     CONF_SYSVAR_NAME,
     CONF_SYSVAR_NUMBER,
     CONF_USE_MULTICAST,
+    LOAD_TYPE_LIGHT,
+    LOAD_TYPE_SWITCH,
     DEFAULT_EVENT_PORT,
     DEFAULT_PORT,
     DOMAIN,
@@ -196,6 +201,12 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         self._use_multicast: bool = entry_data.get(CONF_USE_MULTICAST, False)
         # Manually configured system variables: list of {number, name}
         self._manual_sysvars: list[dict] = entry_data.get(CONF_SYSTEM_VARIABLES, [])
+        # Manual entity-type overrides keyed by short address: {addr: override_dict}
+        self._load_overrides: dict[int, dict] = {
+            o[CONF_LOAD_ADDRESS]: o
+            for o in entry_data.get(CONF_LOAD_OVERRIDES, [])
+            if CONF_LOAD_ADDRESS in o
+        }
 
         self._client = TpiClient(host=self._host, port=self._port)
         self.commands = ZenCommands(self._client)
@@ -933,6 +944,23 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
 
     def get_device_state(self, address: int) -> DeviceState:
         return self.data.device_states.get(address, DeviceState())
+
+    def load_override(self, address: int) -> dict | None:
+        """Return the manual entity-type override for a short address, if any."""
+        return self._load_overrides.get(address)
+
+    def resolved_load_type(self, address: int) -> str:
+        """Effective HA entity type for a short address.
+
+        A manual override wins; otherwise fall back to capability detection —
+        relay control gear becomes a switch, everything else a light. Each
+        platform's setup filters on this so an address registers exactly once.
+        """
+        override = self._load_overrides.get(address)
+        if override:
+            return override[CONF_LOAD_TYPE]
+        cg_type = self.data.short_address_types.get(address, DaliCgTypeMask(0))
+        return LOAD_TYPE_SWITCH if DaliCgTypeMask.RELAY in cg_type else LOAD_TYPE_LIGHT
 
     @property
     def device_info(self) -> DeviceInfo:
