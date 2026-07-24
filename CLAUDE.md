@@ -18,7 +18,16 @@ for f in glob.glob('custom_components/**/*.py', recursive=True):
 "
 ```
 
-To install into a local HA dev environment, symlink or copy `custom_components/zencontrol/` into the HA `config/custom_components/` directory and restart HA.
+Run the unit tests (they cover the `tpi/` protocol layer and need **no** Home Assistant install — `tests/conftest.py` imports `tpi/` standalone):
+```bash
+python -m pytest tests/ -q
+```
+Run a single test:
+```bash
+python -m pytest tests/test_protocol.py::test_checksum_roundtrip -q
+```
+
+To install into a local HA dev environment, symlink or copy `custom_components/zencontrol/` into the HA `config/custom_components/` directory and restart HA. Minimum supported HA is **2026.3.0** (the integration ships its brand icon/logo in `custom_components/zencontrol/brand/`, which relies on the 2026.3 local-brand-images feature).
 
 ## Architecture
 
@@ -62,8 +71,8 @@ Exception: commands that only operate on groups use 0–15 directly (e.g. `QUERY
 
 ### Coordinator / state flow
 
-1. `async_config_entry_first_refresh()` triggers `_async_update_data()` → `_discover()`.
-2. Discovery queries groups, scenes per group, profiles, and short address metadata sequentially.
+1. `async_config_entry_first_refresh()` triggers `_async_update_data()` → `_discover()`. `_discover()` first checks `query_startup_complete()` and raises `UpdateFailed` (→ `ConfigEntryNotReady`, retried with backoff) if the controller is still booting — it never blocks/sleeps. A `_discovered` flag guards this so discovery runs exactly once.
+2. Discovery queries controller metadata, groups, profiles, short-address metadata, group capabilities, control-device instances, and system variables. Per-address/per-CD queries run concurrently (see "Discovery is concurrent" below); scenes are **not** auto-discovered (they are manually configured via the options flow).
 3. After discovery, `setup_events()` registers the coordinator with the shared `EventListener` and sends `SET_TPI_EVENT_UNICAST_ADDRESS` + `ENABLE_TPI_EVENT_EMIT` to the controller.
 4. Push events (`LEVEL_CHANGE_EVENT_V2`, `COLOUR_CHANGED_EVENT`, `SCENE_CHANGE_EVENT`, `PROFILE_CHANGED_EVENT`) call `async_set_updated_data()` — no polling needed for live state.
 5. Every 30 s, `_async_update_data()` calls `_check_and_assert_events()` which re-asserts unicast config if the controller has rebooted (detects via `QUERY_TPI_EVENT_EMIT_STATE`).
@@ -106,4 +115,6 @@ One `EventListener` UDP socket is shared across all config entries (controllers)
 
 ### Config entry data keys (`const.py`)
 
-`CONF_HOST`, `CONF_PORT` (default 5108), `CONF_EVENT_PORT` (default 6970), `CONF_USE_MULTICAST` (default False), `CONF_SHORT_ADDRESSES` (list of ints).
+- Set at initial config flow: `CONF_HOST`, `CONF_PORT` (default 5108), `CONF_EVENT_PORT` (default 6970), `CONF_USE_MULTICAST` (default False).
+- Managed by the options flow (stored in `entry.options`, merged over `entry.data` via `get_entry_config`): `CONF_SCENES` (list of `{scene_address, scene_number, scene_name}`) and `CONF_SYSTEM_VARIABLES` (list of `{sysvar_number, sysvar_name}`).
+- Short addresses are **auto-discovered**, not configured — there is no `CONF_SHORT_ADDRESSES`.
