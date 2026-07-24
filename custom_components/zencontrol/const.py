@@ -19,6 +19,24 @@ CONF_SYSTEM_VARIABLES = "system_variables" # list[dict] — manually configured 
 CONF_SYSVAR_NUMBER = "sysvar_number"       # system variable index (0-147)
 CONF_SYSVAR_NAME = "sysvar_name"           # display name
 
+# Manual entity-type overrides for short-address loads (list[dict])
+CONF_LOAD_OVERRIDES = "load_overrides"
+CONF_LOAD_ADDRESS = "load_address"         # short address 0-63
+CONF_LOAD_TYPE = "load_type"               # one of LOAD_TYPE_*
+CONF_LOAD_NAME = "load_name"               # optional display name
+CONF_COVER_INVERT = "cover_invert"         # bool — flip open/closed ends
+CONF_COVER_DEVICE_CLASS = "cover_device_class"
+CONF_FAN_SPEEDS = "fan_speeds"             # list[{name, level}] ascending by level
+
+# Load-override types
+LOAD_TYPE_LIGHT = "light"
+LOAD_TYPE_SWITCH = "switch"
+LOAD_TYPE_COVER = "cover"
+LOAD_TYPE_FAN = "fan"
+
+# Arc level that halts a moving cover (DALI MASK / no-change byte)
+COVER_STOP_ARC = 0xFF
+
 # Defaults
 DEFAULT_PORT = 5108
 DEFAULT_EVENT_PORT = 6970   # Unicast receive port on the HA side
@@ -37,6 +55,8 @@ UID_BUTTON = "button"
 UID_ABSOLUTE = "absolute"
 UID_BUTTON_LED = "button_led"
 UID_SYSVAR = "sysvar"
+UID_COVER = "cover"
+UID_FAN = "fan"
 
 # HA data keys (stored in hass.data[DOMAIN])
 DATA_COORDINATOR = "coordinator"
