@@ -53,6 +53,7 @@ class ZenOccupancySensor(CoordinatorEntity[ZenControlCoordinator], BinarySensorE
     """Binary sensor representing one DALI occupancy sensor instance."""
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
 
     def __init__(
@@ -68,7 +69,7 @@ class ZenOccupancySensor(CoordinatorEntity[ZenControlCoordinator], BinarySensorE
             f"{entry.entry_id}_{UID_OCCUPANCY}_{sensor.cd_address}_{sensor.instance_number}"
         )
         self._attr_name = sensor.label
-        self._attr_device_info = coordinator.device_info
+        self._attr_device_info = coordinator.device_info_for_cd(sensor.cd_address)
         self._attr_extra_state_attributes = {
             "dali_cd_address": sensor.cd_address,       # TPI address (64-127)
             "cd_index": sensor.cd_address - 64,         # CD index (0-63)
@@ -99,6 +100,7 @@ class ZenAbsoluteInputBinarySensor(
     """
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
     _attr_icon = "mdi:light-switch"
 
     def __init__(
@@ -114,7 +116,7 @@ class ZenAbsoluteInputBinarySensor(
         self._attr_unique_id = (
             f"{entry.entry_id}_{UID_ABSOLUTE}_{absinput.cd_address}_{absinput.instance_number}"
         )
-        self._attr_device_info = coordinator.device_info
+        self._attr_device_info = coordinator.device_info_for_cd(absinput.cd_address)
 
     @property
     def _raw_value(self) -> int | None:

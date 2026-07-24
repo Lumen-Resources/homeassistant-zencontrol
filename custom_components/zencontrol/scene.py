@@ -7,6 +7,7 @@ from homeassistant.components.scene import Scene
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     CONF_SCENE_ADDRESS,
@@ -39,10 +40,15 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class ZenScene(Scene):
-    """A manually configured DALI scene targeting a specific address."""
+class ZenScene(CoordinatorEntity[ZenControlCoordinator], Scene):
+    """A manually configured DALI scene targeting a specific address.
+
+    Scenes are stateless, but inheriting CoordinatorEntity gives them proper
+    availability tracking — they go unavailable when the controller does.
+    """
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -50,7 +56,7 @@ class ZenScene(Scene):
         entry: ConfigEntry,
         config: dict,
     ) -> None:
-        self._coordinator = coordinator
+        super().__init__(coordinator)
         self._address: int = config[CONF_SCENE_ADDRESS]
         self._scene_number: int = config[CONF_SCENE_NUMBER]
 
@@ -63,4 +69,4 @@ class ZenScene(Scene):
 
     async def async_activate(self, **kwargs) -> None:  # type: ignore[override]
         """Recall the scene on the configured address."""
-        await self._coordinator.commands.recall_scene(self._address, self._scene_number)
+        await self.coordinator.commands.recall_scene(self._address, self._scene_number)

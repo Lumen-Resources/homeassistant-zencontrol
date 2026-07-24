@@ -72,6 +72,51 @@ def _channel_to_dali(value: int) -> int:
     return min(_DALI_MAX, round(value * _DALI_MAX / _HA_MAX))
 
 
+# ---------------------------------------------------------------------------
+# Colour-mode derivation (shared by group and short-address lights)
+# ---------------------------------------------------------------------------
+
+def _modes_from_features(f: DeviceColourFeatures) -> set[ColorMode]:
+    """Supported colour modes implied by discovery-time colour features."""
+    modes: set[ColorMode] = set()
+    if f.tc:
+        modes.add(ColorMode.COLOR_TEMP)
+    if f.rgbwaf_channels >= 4:
+        modes.add(ColorMode.RGBW)
+    elif f.rgbwaf_channels >= 3:
+        modes.add(ColorMode.RGB)
+    if f.xy:
+        modes.add(ColorMode.XY)
+    return modes
+
+
+def _mode_from_state(
+    cs: ColourState | None, f: DeviceColourFeatures
+) -> ColorMode | None:
+    """Active colour mode implied by the live colour state, if any."""
+    if cs and cs.colour_type:
+        if cs.colour_type == ColourType.TC:
+            return ColorMode.COLOR_TEMP
+        if cs.colour_type == ColourType.RGBWAF:
+            return ColorMode.RGBW if f.rgbwaf_channels >= 4 else ColorMode.RGB
+        if cs.colour_type == ColourType.XY:
+            return ColorMode.XY
+    return None
+
+
+def _mode_from_features(f: DeviceColourFeatures) -> ColorMode | None:
+    """Fallback colour mode from features when no live colour state exists."""
+    if f.tc and not f.xy and not f.rgbwaf_channels:
+        return ColorMode.COLOR_TEMP
+    if f.rgbwaf_channels >= 4:
+        return ColorMode.RGBW
+    if f.rgbwaf_channels >= 3:
+        return ColorMode.RGB
+    if f.xy:
+        return ColorMode.XY
+    return None
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -103,6 +148,7 @@ class _ZenLightBase(CoordinatorEntity[ZenControlCoordinator], LightEntity):
     """Shared base for group and short-address light entities."""
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -110,13 +156,14 @@ class _ZenLightBase(CoordinatorEntity[ZenControlCoordinator], LightEntity):
         entry: ConfigEntry,
         dali_address: int,
         unique_id_prefix: str,
-        name: str,
+        name: str | None,
+        device_info,
     ) -> None:
         super().__init__(coordinator)
         self._dali_address = dali_address
         self._attr_unique_id = f"{entry.entry_id}_{unique_id_prefix}_{dali_address}"
         self._attr_name = name
-        self._attr_device_info = coordinator.device_info
+        self._attr_device_info = device_info
 
     # ------------------------------------------------------------------
     # State from coordinator
@@ -312,12 +359,14 @@ class ZenGroupLight(_ZenLightBase):
     ) -> None:
         group_info = coordinator.data.groups[group_number]
         address = group_to_address(group_number)
+        # Groups are logical constructs — they live on the controller device.
         super().__init__(
             coordinator=coordinator,
             entry=entry,
             dali_address=address,
             unique_id_prefix=UID_GROUP,
             name=group_info.label,
+            device_info=coordinator.device_info,
         )
         self._group_number = group_number
         self._attr_extra_state_attributes = {"group_number": group_number}
@@ -359,40 +408,18 @@ class ZenGroupLight(_ZenLightBase):
         if not self._any_dimmable:
             return ColorMode.ONOFF
         f = self._features
-        cs = self._get_colour_state()
-        if cs and cs.colour_type:
-            if cs.colour_type == ColourType.TC:
-                return ColorMode.COLOR_TEMP
-            if cs.colour_type == ColourType.RGBWAF:
-                return ColorMode.RGBW if f.rgbwaf_channels >= 4 else ColorMode.RGB
-            if cs.colour_type == ColourType.XY:
-                return ColorMode.XY
-        # Fall back to feature-based detection when no live colour state is present
-        if f.tc and not f.xy and not f.rgbwaf_channels:
-            return ColorMode.COLOR_TEMP
-        if f.rgbwaf_channels >= 4:
-            return ColorMode.RGBW
-        if f.rgbwaf_channels >= 3:
-            return ColorMode.RGB
-        if f.xy:
-            return ColorMode.XY
-        return ColorMode.BRIGHTNESS
+        return (
+            _mode_from_state(self._get_colour_state(), f)
+            or _mode_from_features(f)
+            or ColorMode.BRIGHTNESS
+        )
 
     @property
     def supported_color_modes(self) -> set[ColorMode]:
         if not self._any_dimmable:
             return {ColorMode.ONOFF}
 
-        modes: set[ColorMode] = set()
-        f = self._features
-        if f.tc:
-            modes.add(ColorMode.COLOR_TEMP)
-        if f.rgbwaf_channels >= 4:
-            modes.add(ColorMode.RGBW)
-        elif f.rgbwaf_channels >= 3:
-            modes.add(ColorMode.RGB)
-        if f.xy:
-            modes.add(ColorMode.XY)
+        modes = _modes_from_features(self._features)
 
         # Also include any mode implied by the current colour state, so the set is
         # never narrower than color_mode even if feature discovery came back empty.
@@ -419,6 +446,14 @@ class ZenGroupLight(_ZenLightBase):
             return
         await super().async_turn_on(**kwargs)
 
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        # Relays can't fade — ignore transition, mirroring async_turn_on.
+        if not self._any_dimmable:
+            await self.coordinator.commands.set_off(self._dali_address)
+            self._optimistic_update(new_arc=ARC_LEVEL_OFF)
+            return
+        await super().async_turn_off(**kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Short address light
@@ -433,13 +468,15 @@ class ZenShortAddressLight(_ZenLightBase):
         entry: ConfigEntry,
         address: int,
     ) -> None:
-        label = coordinator.data.short_address_labels.get(address, f"Light {address}")
+        # Each fixture is its own HA device; name=None makes this the primary
+        # entity, so it takes the device's name (the DALI device label).
         super().__init__(
             coordinator=coordinator,
             entry=entry,
             dali_address=address,
             unique_id_prefix=UID_SHORT,
-            name=label,
+            name=None,
+            device_info=coordinator.device_info_for_short_address(address),
         )
         self._attr_extra_state_attributes = {"dali_address": address}
 
@@ -464,43 +501,15 @@ class ZenShortAddressLight(_ZenLightBase):
     @property
     def color_mode(self) -> ColorMode:
         f = self._features
-        cs = self._get_colour_state()
-        if cs and cs.colour_type:
-            if cs.colour_type == ColourType.TC:
-                return ColorMode.COLOR_TEMP
-            if cs.colour_type == ColourType.RGBWAF:
-                channels = f.rgbwaf_channels
-                if channels >= 4:
-                    return ColorMode.RGBW
-                return ColorMode.RGB
-            if cs.colour_type == ColourType.XY:
-                return ColorMode.XY
-        # Fall back to feature-based detection
-        if f.tc and not f.xy and not f.rgbwaf_channels:
-            return ColorMode.COLOR_TEMP
-        if f.rgbwaf_channels >= 4:
-            return ColorMode.RGBW
-        if f.rgbwaf_channels >= 3:
-            return ColorMode.RGB
-        if f.xy:
-            return ColorMode.XY
-        return ColorMode.BRIGHTNESS
+        return (
+            _mode_from_state(self._get_colour_state(), f)
+            or _mode_from_features(f)
+            or ColorMode.BRIGHTNESS
+        )
 
     @property
     def supported_color_modes(self) -> set[ColorMode]:
-        f = self._features
-        modes: set[ColorMode] = set()
-        if f.tc:
-            modes.add(ColorMode.COLOR_TEMP)
-        if f.rgbwaf_channels >= 4:
-            modes.add(ColorMode.RGBW)
-        elif f.rgbwaf_channels >= 3:
-            modes.add(ColorMode.RGB)
-        if f.xy:
-            modes.add(ColorMode.XY)
-        if not modes:
-            modes.add(ColorMode.BRIGHTNESS)
-        return modes
+        return _modes_from_features(self._features) or {ColorMode.BRIGHTNESS}
 
     @property
     def supported_features(self) -> LightEntityFeature:

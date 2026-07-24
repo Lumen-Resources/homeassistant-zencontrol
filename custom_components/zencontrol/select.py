@@ -35,12 +35,14 @@ class ZenProfileSelect(CoordinatorEntity[ZenControlCoordinator], SelectEntity):
     """Allows the user to select the active controller profile."""
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
     _attr_icon = "mdi:tune"
+    # Device name (the controller) provides context — entity is just "Profile".
+    _attr_name = "Profile"
 
     def __init__(self, coordinator: ZenControlCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_{UID_PROFILE}"
-        self._attr_name = f"{coordinator.data.label} Profile"
         self._attr_device_info = coordinator.device_info
         self._build_options()
 

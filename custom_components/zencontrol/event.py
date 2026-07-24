@@ -55,6 +55,7 @@ class ZenButtonEvent(EventEntity):
     """
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
     _attr_device_class = EventDeviceClass.BUTTON
     _attr_event_types = BUTTON_EVENT_TYPES
 
@@ -71,7 +72,7 @@ class ZenButtonEvent(EventEntity):
         self._attr_unique_id = (
             f"{entry.entry_id}_{UID_BUTTON}_{button.cd_address}_{button.instance_number}"
         )
-        self._attr_device_info = coordinator.device_info
+        self._attr_device_info = coordinator.device_info_for_cd(button.cd_address)
         self._attr_extra_state_attributes = {
             "dali_cd_address": button.cd_address,       # TPI address (64-127)
             "cd_index": button.cd_address - 64,         # CD index (0-63)

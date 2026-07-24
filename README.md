@@ -10,7 +10,7 @@ Developed and maintained by **[Lumen Resources](https://www.lumenresources.com.a
 
 - A zencontrol Application Controller (any model) on your local network
 - The **TPI Advanced licence** enabled on the controller (contact your zencontrol installer or Lumen Resources if unsure)
-- Home Assistant 2024.1 or later
+- Home Assistant 2026.3 or later
 
 ---
 
@@ -69,6 +69,16 @@ After setup, the integration creates the following entities for each controller:
 | **Sensor** | A controller system variable | Auto-discovered (named) + manual; see below |
 | **Select** | Active controller profile | Shows and controls the current profile |
 
+### Device structure
+
+Entities are organised into a device tree under each controller:
+
+- **Controller** — group lights, scenes, the profile select, and system-variable sensors.
+- **One device per DALI fixture/relay** (short address) — its light or switch entity, named after the DALI device label.
+- **One device per DALI control device** (keypad, multisensor, …) — its button events, button-LED switches, occupancy sensors, and absolute inputs.
+
+Entity IDs are stable across upgrades (they derive from internal unique IDs), but friendly names follow the modern Home Assistant convention of *device name + entity name*.
+
 ### Colour control
 
 Colour-capable fixtures are fully supported:
@@ -87,8 +97,7 @@ All lights support brightness control. Transitions are also supported — set a 
 
 DALI occupancy sensors (motion detectors) are automatically discovered and appear as **binary sensor** entities with device class `occupancy`. When motion is detected the sensor turns `on`; it returns to `off` after the hold time configured on the controller has elapsed with no further motion.
 
-- Each sensor instance on the DALI bus appears as a separate entity.
-- All sensors are listed under the controller device — there is no per-room grouping.
+- Each sensor instance on the DALI bus appears as a separate entity, grouped under its control device.
 - The hold time is read directly from the controller at startup, so no manual configuration is required.
 - Initial state is recovered on startup: if the controller reports that motion was detected more recently than the hold time, the sensor will start in the `on` state.
 - Each sensor entity exposes three diagnostic attributes: `dali_cd_address` (the raw TPI address, 64–127), `cd_index` (the control device index, 0–63), and `hold_time_s` (the hold time in seconds).

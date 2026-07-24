@@ -65,13 +65,34 @@ def _coordinator_for_device(
 async def async_get_triggers(
     hass: HomeAssistant, device_id: str
 ) -> list[dict[str, str | int]]:
-    """List press/hold triggers for every push button on this controller."""
-    _entry_id, coordinator = _coordinator_for_device(hass, device_id)
+    """List press/hold triggers for the push buttons on this device.
+
+    Buttons live on per-keypad sub-devices, so only the buttons belonging to
+    the given device are listed (the controller device itself lists none).
+    """
+    entry_id, coordinator = _coordinator_for_device(hass, device_id)
     if coordinator is None:
+        return []
+
+    # Resolve which DALI control device this HA device represents from its
+    # identifier of the form "<entry_id>_cd_<cd_address>".
+    device = dr.async_get(hass).async_get(device_id)
+    cd_prefix = f"{entry_id}_cd_"
+    cd_address: int | None = None
+    for domain, ident in device.identifiers:
+        if domain == DOMAIN and str(ident).startswith(cd_prefix):
+            try:
+                cd_address = int(str(ident)[len(cd_prefix):])
+            except ValueError:
+                pass
+            break
+    if cd_address is None:
         return []
 
     triggers: list[dict[str, str | int]] = []
     for button in coordinator.data.buttons:
+        if button.cd_address != cd_address:
+            continue
         for trigger_type in (BUTTON_EVENT_PRESS, BUTTON_EVENT_HOLD):
             triggers.append(
                 {

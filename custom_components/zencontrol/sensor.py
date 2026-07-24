@@ -48,6 +48,7 @@ class ZenSystemVariableSensor(CoordinatorEntity[ZenControlCoordinator], SensorEn
     """
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(

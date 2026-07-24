@@ -76,6 +76,8 @@ One `EventListener` UDP socket is shared across all config entries (controllers)
 
 - `ZenGroupLight` / `ZenScene` target DALI group address (group_number + 64).
 - `ZenShortAddressLight` / `ZenRelaySwitch` target the raw short address (0–63).
+- **Device tree:** controller device holds groups/scenes/profile/sysvars; each short address gets its own HA device (`{entry_id}_sa_{addr}`, via `device_info_for_short_address`); each control device gets one (`{entry_id}_cd_{addr}`, via `device_info_for_cd`, named from `cd_labels`). All entities set `_attr_has_entity_name = True`; primary entities of their own device (fixture lights, relays) use `name=None`.
+- **Discovery is concurrent:** per-address/per-CD metadata queries run under `_query_sem` (Semaphore(16)) via `_bounded()`; queries within one device stay sequential. `TpiClient.next_seq()` skips in-flight seq numbers, so parallelism can't corrupt request/response matching.
 - Relay detection: `DALI_HW_RELAY` flag in `DALI_QUERY_CG_TYPE` response → `switch.py` instead of `light.py`.
 - Colour mode for short addresses is resolved from `QUERY_DALI_COLOUR_FEATURES` at discovery time.
 

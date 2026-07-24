@@ -7,6 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 
 from .const import (
     CONF_EVENT_PORT,
@@ -73,6 +74,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.setup_events(listener)
 
     hass.data[DOMAIN][entry.entry_id] = {DATA_COORDINATOR: coordinator}
+
+    # Register the controller device before forwarding to entity platforms —
+    # per-fixture and per-keypad sub-devices reference it as via_device, and
+    # the parent must already exist when they are created (hard error in
+    # future HA releases otherwise).
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        **coordinator.device_info,
+    )
 
     # Forward to entity platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

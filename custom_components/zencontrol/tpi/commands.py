@@ -348,6 +348,9 @@ class ZenCommands:
         Note: this legacy query returns only 16 bits with zero magnitude. Full
         precision (signed 32-bit + magnitude) arrives via SYSTEM_VARIABLE_CHANGED
         events, which are the authoritative source for sensor state.
+
+        UNVERIFIED: currently unused by the integration; the signed-16-bit
+        interpretation has not been confirmed against hardware.
         """
         resp = await self._send(Command.QUERY_SYSTEM_VARIABLE, address=number)
         if resp and resp.has_data and len(resp.data) >= 2:

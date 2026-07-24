@@ -49,6 +49,9 @@ class ZenRelaySwitch(CoordinatorEntity[ZenControlCoordinator], SwitchEntity):
     """Switch entity for a DALI relay at a fixed short address."""
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
+    # Primary entity of its own device — takes the device's name (DALI label).
+    _attr_name = None
 
     def __init__(
         self,
@@ -58,10 +61,8 @@ class ZenRelaySwitch(CoordinatorEntity[ZenControlCoordinator], SwitchEntity):
     ) -> None:
         super().__init__(coordinator)
         self._address = address
-        label = coordinator.data.short_address_labels.get(address, f"Relay {address}")
-        self._attr_name = label
         self._attr_unique_id = f"{entry.entry_id}_{UID_SHORT}_relay_{address}"
-        self._attr_device_info = coordinator.device_info
+        self._attr_device_info = coordinator.device_info_for_short_address(address)
         self._attr_extra_state_attributes = {"dali_address": address}
 
     @property
@@ -102,6 +103,7 @@ class ZenButtonLedSwitch(CoordinatorEntity[ZenControlCoordinator], SwitchEntity)
     """
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
     _attr_icon = "mdi:led-on"
 
     def __init__(
@@ -117,7 +119,7 @@ class ZenButtonLedSwitch(CoordinatorEntity[ZenControlCoordinator], SwitchEntity)
         self._attr_unique_id = (
             f"{entry.entry_id}_{UID_BUTTON_LED}_{button.cd_address}_{button.instance_number}"
         )
-        self._attr_device_info = coordinator.device_info
+        self._attr_device_info = coordinator.device_info_for_cd(button.cd_address)
         # Enable by default only when a definite LED state was read at discovery.
         self._attr_entity_registry_enabled_default = button.has_led
         self._attr_extra_state_attributes = {

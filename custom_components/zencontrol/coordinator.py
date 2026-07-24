@@ -147,6 +147,9 @@ class ControllerState:
     # {address: ColourTempLimits}
     short_address_ct_limits: dict[int, ColourTempLimits] = field(default_factory=dict)
 
+    # Control-device labels {cd_address (64-127): label} — used as sub-device names
+    cd_labels: dict[int, str] = field(default_factory=dict)
+
     # Occupancy sensors (auto-discovered)
     # List of all discovered occupancy sensor instances
     occupancy_sensors: list[OccupancySensorInfo] = field(default_factory=list)
@@ -202,6 +205,9 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         self._listener: EventListener | None = None
         # True once initial discovery has completed successfully
         self._discovered = False
+        # Cap concurrent TPI queries during discovery — parallel enough to
+        # collapse timeout stacking, gentle enough not to flood the controller.
+        self._query_sem = asyncio.Semaphore(16)
 
         super().__init__(
             hass,
@@ -315,29 +321,44 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             len(self.data.system_variables),
         )
 
+    async def _bounded(self, coro):
+        """Await *coro* under the discovery concurrency semaphore."""
+        async with self._query_sem:
+            return await coro
+
     async def _discover_short_addresses(self) -> None:
-        """Auto-discover all DALI short addresses and query their metadata."""
+        """Auto-discover all DALI short addresses and query their metadata.
+
+        Addresses are queried concurrently (bounded by the semaphore) so one
+        non-answering device costs a single timeout, not one per query stacked
+        serially across the whole line.
+        """
         addresses = await self.commands.query_control_gear_addresses()
         self.data.short_addresses = addresses
         _LOGGER.debug("Discovered %d short addresses on %s: %s", len(addresses), self._host, addresses)
 
-        for addr in addresses:
-            cg_type = await self.commands.query_cg_type(addr)
-            self.data.short_address_types[addr] = cg_type
+        await asyncio.gather(
+            *(self._bounded(self._query_short_address_metadata(addr)) for addr in addresses)
+        )
 
-            features = await self.commands.query_colour_features(addr)
-            self.data.short_address_colour_features[addr] = features
+    async def _query_short_address_metadata(self, addr: int) -> None:
+        """Fetch all metadata for one short address (sequential per device)."""
+        cg_type = await self.commands.query_cg_type(addr)
+        self.data.short_address_types[addr] = cg_type
 
-            label = await self.commands.query_device_label(addr) or f"Light {addr}"
-            self.data.short_address_labels[addr] = label
+        features = await self.commands.query_colour_features(addr)
+        self.data.short_address_colour_features[addr] = features
 
-            if features.tc:
-                limits = await self.commands.query_colour_temp_limits(addr)
-                if limits:
-                    self.data.short_address_ct_limits[addr] = limits
+        label = await self.commands.query_device_label(addr) or f"Light {addr}"
+        self.data.short_address_labels[addr] = label
 
-            if addr not in self.data.device_states:
-                self.data.device_states[addr] = DeviceState()
+        if features.tc:
+            limits = await self.commands.query_colour_temp_limits(addr)
+            if limits:
+                self.data.short_address_ct_limits[addr] = limits
+
+        if addr not in self.data.device_states:
+            self.data.device_states[addr] = DeviceState()
 
     async def _discover_group_colour_features(self) -> None:
         """Derive colour capabilities for each group from its member short addresses.
@@ -350,13 +371,19 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         if not self.data.groups:
             return
 
-        # Query every known short address for group membership → full reverse map.
-        # Needed for both colour-feature derivation and relay-only detection.
-        all_memberships: dict[int, frozenset[int]] = {}
-        for addr in self.data.short_addresses:
-            all_memberships[addr] = frozenset(
-                await self.commands.query_group_membership(addr)
+        # Query every known short address for group membership (concurrently)
+        # → full reverse map. Needed for both colour-feature derivation and
+        # relay-only detection.
+        memberships = await asyncio.gather(
+            *(
+                self._bounded(self.commands.query_group_membership(addr))
+                for addr in self.data.short_addresses
             )
+        )
+        all_memberships: dict[int, frozenset[int]] = {
+            addr: frozenset(groups)
+            for addr, groups in zip(self.data.short_addresses, memberships)
+        }
 
         # group_number → member short addresses
         group_members: dict[int, list[int]] = {}
@@ -434,7 +461,10 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
 
         # Auto: query all names concurrently; keep the ones that are named.
         names = await asyncio.gather(
-            *[self.commands.query_system_variable_name(n) for n in range(max_sysvars)]
+            *(
+                self._bounded(self.commands.query_system_variable_name(n))
+                for n in range(max_sysvars)
+            )
         )
         for number, name in enumerate(names):
             if name:
@@ -460,11 +490,12 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         )
 
     async def _discover_instances(self) -> None:
-        """Auto-discover all DALI control-device instances in a single pass.
+        """Auto-discover all DALI control-device instances.
 
-        Walks every control device that reports instances and dispatches each
-        instance to the appropriate handler by type — occupancy sensors, push
-        buttons, and absolute inputs. Other instance types are ignored.
+        Control devices are walked concurrently (bounded by the semaphore);
+        instances within one device stay sequential. Each instance is
+        dispatched by type — occupancy sensors, push buttons, and absolute
+        inputs. Other instance types are ignored.
         """
         cd_addresses = await self.commands.query_addresses_with_instances()
         _LOGGER.debug(
@@ -472,15 +503,31 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             len(cd_addresses), self._host, cd_addresses,
         )
 
-        for cd_addr in cd_addresses:
-            instances = await self.commands.query_instances_by_address(cd_addr)
-            for inst in instances:
-                if inst.instance_type == InstanceType.OCCUPANCY_SENSOR:
-                    await self._add_occupancy_sensor(cd_addr, inst, instances)
-                elif inst.instance_type == InstanceType.PUSH_BUTTON:
-                    await self._add_button(cd_addr, inst, instances)
-                elif inst.instance_type == InstanceType.ABSOLUTE_INPUT:
-                    await self._add_absolute_input(cd_addr, inst, instances)
+        await asyncio.gather(
+            *(self._bounded(self._discover_cd_instances(cd)) for cd in cd_addresses)
+        )
+
+        # Concurrent walks append in nondeterministic order — sort for stable
+        # entity ordering across restarts.
+        self.data.occupancy_sensors.sort(key=lambda s: (s.cd_address, s.instance_number))
+        self.data.buttons.sort(key=lambda b: (b.cd_address, b.instance_number))
+        self.data.absolute_inputs.sort(key=lambda a: (a.cd_address, a.instance_number))
+
+    async def _discover_cd_instances(self, cd_addr: int) -> None:
+        """Discover one control device: its label, then all of its instances."""
+        # The device label doubles as the HA sub-device name for this CD.
+        label = await self.commands.query_device_label(cd_addr)
+        if label:
+            self.data.cd_labels[cd_addr] = label
+
+        instances = await self.commands.query_instances_by_address(cd_addr)
+        for inst in instances:
+            if inst.instance_type == InstanceType.OCCUPANCY_SENSOR:
+                await self._add_occupancy_sensor(cd_addr, inst, instances)
+            elif inst.instance_type == InstanceType.PUSH_BUTTON:
+                await self._add_button(cd_addr, inst, instances)
+            elif inst.instance_type == InstanceType.ABSOLUTE_INPUT:
+                await self._add_absolute_input(cd_addr, inst, instances)
 
     async def _instance_label(
         self, cd_addr: int, inst: InstanceInfo, instances: list[InstanceInfo],
@@ -488,24 +535,20 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
     ) -> str:
         """Resolve a display label for an instance.
 
-        Prefers the instance's own label; otherwise falls back to the device
-        label plus *suffix*, appending the instance number when a device has
-        more than one instance of the same type.
+        Prefers the instance's own label; otherwise falls back to *suffix*,
+        appending the instance number when a device has more than one instance
+        of the same type. The owning control device provides context via its
+        HA sub-device name, so labels no longer embed the device label.
         """
         label = await self.commands.query_instance_label(cd_addr, inst.instance_number)
         if label:
             return label
-        device_label = (
-            await self.commands.query_device_label(cd_addr)
-            or f"Device {cd_addr - 64}"
-        )
         same_type = sum(
             1 for i in instances if i.instance_type == inst.instance_type
         )
-        label = f"{device_label} {suffix}"
         if same_type > 1:
-            label = f"{label} {inst.instance_number}"
-        return label
+            return f"{suffix} {inst.instance_number}"
+        return suffix
 
     async def _add_occupancy_sensor(
         self, cd_addr: int, inst: InstanceInfo, instances: list[InstanceInfo],
@@ -583,7 +626,10 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         )
 
     async def _poll_all_states(self) -> None:
-        """Poll the current arc level (and colour) for all known addresses."""
+        """Poll the current arc level (and colour) for all known addresses.
+
+        Addresses are polled concurrently (bounded by the semaphore).
+        """
         addresses_to_poll: list[int] = []
 
         # Group addresses (64-79)
@@ -593,25 +639,30 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         # Short addresses
         addresses_to_poll.extend(self.data.short_addresses)
 
-        for addr in addresses_to_poll:
-            level = await self.commands.query_level(addr)
-            if level is not None:
-                state = self.data.device_states.setdefault(addr, DeviceState())
-                state.arc_level = level
+        await asyncio.gather(
+            *(self._bounded(self._poll_address_state(addr)) for addr in addresses_to_poll)
+        )
 
-            # Poll colour for colour-capable short addresses
-            if addr < DALI_GROUP_OFFSET:
-                features = self.data.short_address_colour_features.get(addr)
-                if features and features.supports_colour:
-                    colour = await self.commands.query_colour(addr)
-                    if colour:
-                        self.data.device_states[addr].colour = colour
-            else:
-                # Poll colour for group addresses too — groups may contain colour fixtures.
-                # QUERY_DALI_COLOUR returns NO_ANSWER for non-colour groups; that's fine.
+    async def _poll_address_state(self, addr: int) -> None:
+        """Poll arc level (and colour, where applicable) for one address."""
+        level = await self.commands.query_level(addr)
+        if level is not None:
+            state = self.data.device_states.setdefault(addr, DeviceState())
+            state.arc_level = level
+
+        # Poll colour for colour-capable short addresses
+        if addr < DALI_GROUP_OFFSET:
+            features = self.data.short_address_colour_features.get(addr)
+            if features and features.supports_colour:
                 colour = await self.commands.query_colour(addr)
                 if colour:
                     self.data.device_states[addr].colour = colour
+        else:
+            # Poll colour for group addresses too — groups may contain colour fixtures.
+            # QUERY_DALI_COLOUR returns NO_ANSWER for non-colour groups; that's fine.
+            colour = await self.commands.query_colour(addr)
+            if colour:
+                self.data.device_states[addr].colour = colour
 
     # ------------------------------------------------------------------
     # TPI event configuration
@@ -885,7 +936,7 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """DeviceInfo shared by all entities belonging to this controller."""
+        """DeviceInfo for the controller itself (parent of all sub-devices)."""
         return DeviceInfo(
             identifiers={(DOMAIN, self._entry_id)},
             name=self.data.label,
@@ -893,6 +944,28 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             sw_version="{}.{}.{}".format(*self.data.version),
             configuration_url=INTEGRATION_AUTHOR_URL,
             via_device=None,
+        )
+
+    def device_info_for_cd(self, cd_address: int) -> DeviceInfo:
+        """Sub-device for a DALI control device (keypad, multisensor, …)."""
+        label = self.data.cd_labels.get(cd_address) or f"Control Device {cd_address - 64}"
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._entry_id}_cd_{cd_address}")},
+            name=label,
+            manufacturer=HARDWARE_MANUFACTURER,
+            model="DALI control device",
+            via_device=(DOMAIN, self._entry_id),
+        )
+
+    def device_info_for_short_address(self, address: int) -> DeviceInfo:
+        """Sub-device for a DALI control gear (fixture/relay) short address."""
+        label = self.data.short_address_labels.get(address) or f"Light {address}"
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._entry_id}_sa_{address}")},
+            name=label,
+            manufacturer=HARDWARE_MANUFACTURER,
+            model="DALI control gear",
+            via_device=(DOMAIN, self._entry_id),
         )
 
     async def async_disconnect(self) -> None:
