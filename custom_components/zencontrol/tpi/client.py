@@ -16,8 +16,13 @@ DEFAULT_TIMEOUT = 5.0
 class _UdpProtocol(asyncio.DatagramProtocol):
     """asyncio DatagramProtocol that feeds received datagrams to a callback."""
 
-    def __init__(self, on_data: Callable[[bytes], None]) -> None:
+    def __init__(
+        self,
+        on_data: Callable[[bytes], None],
+        on_lost: Callable[[Exception | None], None],
+    ) -> None:
         self._on_data = on_data
+        self._on_lost = on_lost
 
     def datagram_received(self, data: bytes, addr: tuple) -> None:
         self._on_data(data)
@@ -27,13 +32,19 @@ class _UdpProtocol(asyncio.DatagramProtocol):
 
     def connection_lost(self, exc: Exception | None) -> None:
         _LOGGER.debug("UDP connection lost: %s", exc)
+        self._on_lost(exc)
 
 
 class _TcpProtocol(asyncio.Protocol):
     """asyncio Protocol for TCP; reassembles stream into TPI frames."""
 
-    def __init__(self, on_data: Callable[[bytes], None]) -> None:
+    def __init__(
+        self,
+        on_data: Callable[[bytes], None],
+        on_lost: Callable[[Exception | None], None],
+    ) -> None:
         self._on_data = on_data
+        self._on_lost = on_lost
         self._buf = bytearray()
 
     def data_received(self, data: bytes) -> None:
@@ -54,6 +65,7 @@ class _TcpProtocol(asyncio.Protocol):
 
     def connection_lost(self, exc: Exception | None) -> None:
         _LOGGER.debug("TCP connection lost: %s", exc)
+        self._on_lost(exc)
 
 
 class TpiClient:
@@ -100,7 +112,7 @@ class TpiClient:
     async def _connect_udp(self) -> None:
         loop = asyncio.get_running_loop()
         transport, _ = await loop.create_datagram_endpoint(
-            lambda: _UdpProtocol(self._on_raw_data),
+            lambda: _UdpProtocol(self._on_raw_data, self._on_connection_lost),
             remote_addr=(self._host, self._port),
         )
         self._transport = transport
@@ -109,12 +121,24 @@ class TpiClient:
     async def _connect_tcp(self) -> None:
         loop = asyncio.get_running_loop()
         transport, _ = await loop.create_connection(
-            lambda: _TcpProtocol(self._on_raw_data),
+            lambda: _TcpProtocol(self._on_raw_data, self._on_connection_lost),
             host=self._host,
             port=self._port,
         )
         self._transport = transport
         _LOGGER.debug("TCP connected to %s:%s", self._host, self._port)
+
+    def _on_connection_lost(self, exc: Exception | None) -> None:
+        """Transport dropped — mark disconnected and fail in-flight requests.
+
+        Clearing the transport makes ``connected`` truthful so the coordinator's
+        periodic update reconnects on its next cycle.
+        """
+        self._transport = None
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_exception(ConnectionError(f"TPI transport lost: {exc}"))
+        self._pending.clear()
 
     async def disconnect(self) -> None:
         """Close the transport and cancel any pending requests."""
@@ -135,10 +159,19 @@ class TpiClient:
     # ------------------------------------------------------------------
 
     def next_seq(self) -> int:
-        """Return the next sequence byte (0–255, wrapping)."""
-        seq = self._seq
-        self._seq = (self._seq + 1) & 0xFF
-        return seq
+        """Return the next free sequence byte (0–255, wrapping).
+
+        Skips sequence numbers that still have a pending request so a slow
+        response can never be matched to (or clobbered by) a newer request
+        reusing the same seq. With 256 requests genuinely in flight there is
+        no safe number left, so we fail loudly rather than corrupt matching.
+        """
+        for _ in range(256):
+            seq = self._seq
+            self._seq = (self._seq + 1) & 0xFF
+            if seq not in self._pending:
+                return seq
+        raise ConnectionError("All 256 TPI sequence numbers are in flight")
 
     # ------------------------------------------------------------------
     # Send / receive
