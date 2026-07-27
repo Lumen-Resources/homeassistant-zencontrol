@@ -66,6 +66,10 @@ class ZenCover(CoordinatorEntity[ZenControlCoordinator], CoverEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_name = None  # primary entity of its own device
+    # We don't authoritatively track live travel position, so HA must keep the
+    # open/stop/close controls always available rather than disabling a
+    # direction when it thinks the blind is fully open/closed.
+    _attr_assumed_state = True
     _attr_supported_features = (
         CoverEntityFeature.OPEN
         | CoverEntityFeature.CLOSE
