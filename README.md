@@ -109,7 +109,7 @@ DALI occupancy sensors (motion detectors) are automatically discovered and appea
 DALI push buttons are automatically discovered and appear as **event** entities. Each physical button becomes one event entity whose state is the timestamp of its most recent event, with an `event_type` attribute of either `press` or `hold`.
 
 - Each button also appears as a **device trigger** in the automation UI (e.g. *"Kitchen Button 1" pressed / held*), so you can build automations without touching YAML.
-- Buttons are grouped under the controller device.
+- Each keypad is its own device, with its buttons (and their LED switches) grouped under it.
 
 ### Button LEDs
 
@@ -123,7 +123,7 @@ DALI absolute inputs are discovered as **binary sensor** entities, treated as an
 
 DALI relay loads are auto-detected as on/off **switches** and dimmable loads as **lights**. Some relay loads are really **blinds** or **fans**, which are indistinguishable from a switch/light at the protocol level, so you assign these explicitly in the integration options (Settings → Devices & Services → zencontrol → Configure → *Add a load override*). A short address can be forced to **light**, **switch**, **cover**, or **fan**; the overridden address is then excluded from the other platforms.
 
-- **Cover (blind):** position maps to the DALI arc level (0–254); **stop** sends arc level 255. Options include *invert* (if the open/closed ends are reversed) and the cover type (blind/shade/curtain).
+- **Cover (blind):** position maps to the DALI arc level (0–254); **stop** sends arc level 255. Options include *invert* (if the open/closed ends are reversed) and the cover type (blind/shade/curtain). The open/stop/close controls are always available (the blind's live travel position isn't authoritatively tracked), so you can stop mid-travel and resume in the same direction.
 - **Fan:** speeds are exposed as named preset modes, each mapped to an arc level. When you add a fan you pick the number of speeds and a sensible default table is generated (e.g. 3 speeds → Low 85 / Medium 169 / High 254); you can retune the names and levels later via *Edit fan speeds*.
 
 ### System variables
@@ -159,11 +159,14 @@ To remove a scene, return to **Configure** and select **Remove a scene**.
 
 The integration receives live state updates from the controller via push events — no polling is needed. The following events are handled automatically:
 
-- Light level changes (from wall switches, automations, or other sources)
+- Light level changes (from wall switches, automations, or other sources) — also drives cover position and fan speed
 - Colour changes
 - Scene activations
 - Profile changes
 - Occupancy detections
+- Push-button presses and holds
+- Absolute input changes
+- System variable changes
 
 The controller is pinged every 30 seconds to confirm events are still flowing. If the controller has rebooted, event delivery is re-established automatically.
 
@@ -179,7 +182,7 @@ The controller is pinged every 30 seconds to confirm events are still flowing. I
 
 ### Entities do not appear
 
-- Wait up to 60 seconds after setup — the integration waits for the controller to finish its startup sequence before discovering devices.
+- Give it a minute on a large DALI line. If the controller is still completing its startup sequence, the integration retries automatically (with backoff) rather than blocking Home Assistant — entities appear once the controller reports ready.
 - Check the Home Assistant logs (**Settings → System → Logs**) for any errors from the `zencontrol` integration.
 
 ### State updates are delayed or not working
