@@ -23,8 +23,13 @@ EventCallback = Callable[[str, TpiEvent], None]
 class _EventProtocol(asyncio.DatagramProtocol):
     """asyncio DatagramProtocol — parses arriving datagrams into TpiEvent objects."""
 
-    def __init__(self, dispatch: Callable[[str, TpiEvent], None]) -> None:
+    def __init__(
+        self,
+        dispatch: Callable[[str, TpiEvent], None],
+        closed: asyncio.Event | None = None,
+    ) -> None:
         self._dispatch = dispatch
+        self._closed = closed
 
     def datagram_received(self, data: bytes, addr: tuple) -> None:
         source_ip = addr[0]
@@ -39,6 +44,8 @@ class _EventProtocol(asyncio.DatagramProtocol):
 
     def connection_lost(self, exc: Exception | None) -> None:
         _LOGGER.debug("Event listener connection lost: %s", exc)
+        if self._closed is not None:
+            self._closed.set()
 
 
 class EventListener:
@@ -56,6 +63,7 @@ class EventListener:
         self._use_multicast = use_multicast
         self._handlers: dict[str, EventCallback] = {}  # ip (or mac-str) → callback
         self._transport: asyncio.DatagramTransport | None = None
+        self._closed_event: asyncio.Event | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -64,15 +72,16 @@ class EventListener:
     async def start(self) -> None:
         """Start listening for incoming event datagrams."""
         loop = asyncio.get_running_loop()
+        self._closed_event = asyncio.Event()
         if self._use_multicast:
             transport, _ = await loop.create_datagram_endpoint(
-                lambda: _EventProtocol(self._dispatch_multicast),
+                lambda: _EventProtocol(self._dispatch_multicast, self._closed_event),
                 sock=self._make_multicast_socket(),
             )
         else:
             transport, _ = await loop.create_datagram_endpoint(
-                lambda: _EventProtocol(self._dispatch_unicast),
-                local_addr=("0.0.0.0", self._port),
+                lambda: _EventProtocol(self._dispatch_unicast, self._closed_event),
+                sock=self._make_unicast_socket(),
             )
         self._transport = transport  # type: ignore[assignment]
         _LOGGER.debug(
@@ -82,10 +91,26 @@ class EventListener:
         )
 
     async def stop(self) -> None:
-        """Stop the listener and release the socket."""
+        """Stop the listener and wait for the socket to actually be released.
+
+        Closing an asyncio transport only schedules the underlying socket
+        close; without waiting for connection_lost() a fast reload (unload
+        followed immediately by setup) can race the new bind against the
+        still-open old socket, producing a spurious "Address in use" error.
+        """
         if self._transport:
-            self._transport.close()
+            transport = self._transport
+            closed_event = self._closed_event
             self._transport = None
+            transport.close()
+            if closed_event is not None:
+                try:
+                    await asyncio.wait_for(closed_event.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    _LOGGER.debug(
+                        "Timed out waiting for event listener socket to close"
+                    )
+            self._closed_event = None
 
     @property
     def running(self) -> bool:
@@ -125,6 +150,17 @@ class EventListener:
         # In multicast the source IP is still the sending controller's IP,
         # so we can use the same routing strategy as unicast.
         self._dispatch_unicast(source_ip, event)
+
+    # ------------------------------------------------------------------
+    # Unicast socket factory
+    # ------------------------------------------------------------------
+
+    def _make_unicast_socket(self) -> socket.socket:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setblocking(False)
+        sock.bind(("0.0.0.0", self._port))
+        return sock
 
     # ------------------------------------------------------------------
     # Multicast socket factory

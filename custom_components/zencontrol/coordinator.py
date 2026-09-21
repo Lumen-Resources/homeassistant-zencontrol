@@ -8,6 +8,7 @@ from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.event import async_call_later
@@ -52,6 +53,7 @@ from .tpi import (
     InstanceInfo,
     InstanceType,
     OccupancyTimerInfo,
+    needs_event_reassertion,
     ProfileInfo,
     ProfileInformation,
     TpiClient,
@@ -706,19 +708,42 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             await self.commands.enable_events_unicast(TpiEventMode.ENABLED)
 
     async def _check_and_assert_events(self) -> None:
-        """Ping controller; re-assert event config if it has rebooted."""
+        """Ping controller; re-assert event config if it has rebooted.
+
+        The controller persists the TPI event mode byte across reboots but
+        *not* the unicast destination IP, so the ENABLED bit can read true
+        while the controller is actually emitting events to a stale (or
+        0.0.0.0) address. In unicast mode we must also verify the stored
+        target address/port match what we expect — see
+        tpi.event_check.needs_event_reassertion() for the decision logic.
+        """
         state = await self.commands.query_event_emit_state()
         if state is None:
             _LOGGER.debug("No response from %s during ping", self._host)
             return
-        expected_bit = int(TpiEventMode.ENABLED)
-        if not (state & expected_bit):
-            _LOGGER.info(
-                "Controller %s events not enabled (state=0x%02X) — re-asserting",
-                self._host,
-                state,
-            )
+
+        ha_ip: str | None = None
+        unicast_target: tuple[str, int, int] | None = None
+        if not self._use_multicast and (state & int(TpiEventMode.ENABLE_UNICAST_MODE)):
             ha_ip = await self._get_ha_ip()
+            unicast_target = await self.commands.query_unicast_address()
+
+        needs_reassert, reason = needs_event_reassertion(
+            state=state,
+            use_multicast=self._use_multicast,
+            unicast_target=unicast_target,
+            expected_ip=ha_ip,
+            expected_port=self._event_port,
+        )
+
+        if needs_reassert:
+            _LOGGER.info(
+                "Controller %s %s — re-asserting",
+                self._host,
+                reason,
+            )
+            if ha_ip is None:
+                ha_ip = await self._get_ha_ip()
             if ha_ip and not self._use_multicast:
                 await self.commands.configure_unicast_events(ha_ip, self._event_port)
             else:
@@ -971,8 +996,19 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             manufacturer=HARDWARE_MANUFACTURER,
             sw_version="{}.{}.{}".format(*self.data.version),
             configuration_url=INTEGRATION_AUTHOR_URL,
-            via_device=None,
         )
+
+    def _controller_device_id(self) -> str | None:
+        """Registry ID of the controller device, for via_device_id.
+
+        Sub-devices are created after the controller device is registered
+        (see __init__.py), so this lookup should always succeed once the
+        integration has finished its initial setup.
+        """
+        device = dr.async_get(self.hass).async_get_device(
+            identifiers={(DOMAIN, self._entry_id)}
+        )
+        return device.id if device else None
 
     def device_info_for_cd(self, cd_address: int) -> DeviceInfo:
         """Sub-device for a DALI control device (keypad, multisensor, …)."""
@@ -982,7 +1018,7 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             name=label,
             manufacturer=HARDWARE_MANUFACTURER,
             model="DALI control device",
-            via_device=(DOMAIN, self._entry_id),
+            via_device_id=self._controller_device_id(),
         )
 
     def device_info_for_short_address(self, address: int) -> DeviceInfo:
@@ -993,7 +1029,7 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
             name=label,
             manufacturer=HARDWARE_MANUFACTURER,
             model="DALI control gear",
-            via_device=(DOMAIN, self._entry_id),
+            via_device_id=self._controller_device_id(),
         )
 
     async def async_disconnect(self) -> None:
