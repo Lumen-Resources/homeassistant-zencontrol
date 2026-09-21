@@ -41,6 +41,7 @@ from .const import (
     is_group_address,
 )
 from .event_listener import EventListener
+from .event_check import needs_event_reassertion
 from .protocol import TpiEvent, parse_event
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "EventListener",
     "TpiEvent",
     "parse_event",
+    "needs_event_reassertion",
     "parse_colour_payload",
     # Data classes
     "ColourState",

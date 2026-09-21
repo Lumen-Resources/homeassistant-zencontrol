@@ -27,6 +27,7 @@ from tpi.protocol import (
     calc_checksum,
     parse_event,
     parse_response,
+    parse_unicast_address,
     verify_checksum,
 )
 
@@ -78,6 +79,51 @@ def test_build_unicast_address_frame_spec_vector():
     # SET_TPI_EVENT_UNICAST_ADDRESS -> 192.168.10.10:8811
     frame = build_unicast_address_frame(0, "192.168.10.10", 8811)
     assert frame == bytes.fromhex("040040 06 226B C0A80A0A 63".replace(" ", ""))
+
+
+# ---------------------------------------------------------------------------
+# QUERY_TPI_EVENT_UNICAST_ADDRESS response parsing
+#
+# Not symmetric with build_unicast_address_frame(): the query answer is 7
+# bytes [mode, port_lo, port_hi, ip0..ip3] (little-endian port, mode prefix),
+# whereas the SET frame sends 6 bytes [port_hi, port_lo, ip0..ip3]
+# (big-endian port, no mode byte). Mixing the two layouts up produces
+# plausible-looking garbage instead of an obvious failure.
+# ---------------------------------------------------------------------------
+
+def test_parse_unicast_address_spec_vector():
+    # mode=0x41, port=6970 (LE: 0x3A 0x1B), ip=10.15.0.60
+    data = bytes.fromhex("413a1b0a0f003c")
+    assert parse_unicast_address(data) == ("10.15.0.60", 6970, 0x41)
+
+
+def test_parse_unicast_address_lost_ip_after_reboot():
+    # mode=0x41, port=6970, ip=0.0.0.0 — the controller-reboot failure mode
+    data = bytes.fromhex("413a1b00000000")
+    assert parse_unicast_address(data) == ("0.0.0.0", 6970, 0x41)
+
+
+def test_parse_unicast_address_rejects_short_payload():
+    assert parse_unicast_address(bytes.fromhex("413a1b0a0f00")) is None
+    assert parse_unicast_address(b"") is None
+
+
+def test_unicast_address_build_and_parse_use_opposite_port_byte_order():
+    # Regression guard: these two layouts must never be "simplified" into
+    # agreement — the SET frame is big-endian/no-mode, the QUERY answer is
+    # little-endian/mode-prefixed. Build a SET frame, then re-interpret its
+    # data payload as if it were a QUERY answer: the parsed port must NOT
+    # match the port that was encoded, proving the byte orders differ.
+    frame = build_unicast_address_frame(0, "10.15.0.60", 6970)
+    set_payload = frame[4:10]  # 6-byte dynamic frame payload (no mode byte)
+    # Prepend a dummy mode byte to match the 7-byte QUERY answer shape.
+    fake_query_payload = bytes([0x41]) + set_payload
+    parsed_ip, parsed_port, _mode = parse_unicast_address(fake_query_payload)
+    # IP occupies the same trailing byte positions in both layouts, but the
+    # port bytes are swapped — re-parsing the SET payload as a QUERY answer
+    # must NOT reproduce the original port.
+    assert parsed_port != 6970
+    assert parsed_ip == "10.15.0.60"
 
 
 def test_build_dynamic_frame_structure():

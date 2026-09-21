@@ -106,6 +106,24 @@ def build_unicast_address_frame(seq: int, ip: str, port: int) -> bytes:
     return build_dynamic_frame(seq, Command.SET_TPI_EVENT_UNICAST_ADDRESS, data)
 
 
+def parse_unicast_address(data: bytes) -> tuple[str, int, int] | None:
+    """Parse the QUERY_TPI_EVENT_UNICAST_ADDRESS answer payload.
+
+    Data: [mode, port_lo, port_hi, ip_byte0, ip_byte1, ip_byte2, ip_byte3]
+
+    Note the port here is little-endian and prefixed with a mode byte —
+    this is *not* the same layout as build_unicast_address_frame(), which
+    sends a big-endian port with no mode byte. Returns None if data is
+    shorter than 7 bytes.
+    """
+    if len(data) < 7:
+        return None
+    mode = data[0]
+    port = data[1] | (data[2] << 8)
+    ip = ".".join(str(b) for b in data[3:7])
+    return (ip, port, mode)
+
+
 # ---------------------------------------------------------------------------
 # Response parsing
 # ---------------------------------------------------------------------------

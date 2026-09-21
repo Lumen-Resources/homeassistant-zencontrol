@@ -166,3 +166,31 @@ def test_query_system_variable_name():
     # whitespace-only label is treated as unnamed
     cmds = ZenCommands(FakeClient({Command.QUERY_SYSTEM_VARIABLE_NAME: answer(b"  ")}))
     assert run(cmds.query_system_variable_name(16)) is None
+
+
+# ---------------------------------------------------------------------------
+# TPI event unicast address query
+# ---------------------------------------------------------------------------
+
+def test_query_unicast_address_parses_answer():
+    data = bytes.fromhex("413a1b0a0f003c")  # mode=0x41 port=6970 ip=10.15.0.60
+    cmds = ZenCommands(
+        FakeClient({Command.QUERY_TPI_EVENT_UNICAST_ADDRESS: answer(data)})
+    )
+    assert run(cmds.query_unicast_address()) == ("10.15.0.60", 6970, 0x41)
+
+
+def test_query_unicast_address_lost_ip_after_reboot():
+    data = bytes.fromhex("413a1b00000000")  # mode=0x41 port=6970 ip=0.0.0.0
+    cmds = ZenCommands(
+        FakeClient({Command.QUERY_TPI_EVENT_UNICAST_ADDRESS: answer(data)})
+    )
+    assert run(cmds.query_unicast_address()) == ("0.0.0.0", 6970, 0x41)
+
+
+def test_query_unicast_address_no_answer_returns_none():
+    cmds = ZenCommands(
+        FakeClient({Command.QUERY_TPI_EVENT_UNICAST_ADDRESS: NO_ANSWER})
+    )
+    assert run(cmds.query_unicast_address()) is None
+

@@ -32,6 +32,7 @@ from .protocol import (
     build_tc_colour_data,
     build_unicast_address_frame,
     build_xy_colour_data,
+    parse_unicast_address,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -709,6 +710,13 @@ class ZenCommands:
         resp = await self._send(Command.QUERY_TPI_EVENT_EMIT_STATE)
         if resp and resp.has_data:
             return resp.data[0]
+        return None
+
+    async def query_unicast_address(self) -> tuple[str, int, int] | None:
+        """Return (ip, port, mode) the controller will send events to."""
+        resp = await self._send(Command.QUERY_TPI_EVENT_UNICAST_ADDRESS)
+        if resp and resp.has_data:
+            return parse_unicast_address(resp.data)
         return None
 
     async def enable_events_unicast(self, mode_flags: int) -> bool:
